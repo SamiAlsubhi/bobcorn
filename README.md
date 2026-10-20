@@ -36,11 +36,11 @@ scripts/make-installer.sh
 ```
 
 `build/Bobcorn.dmg` opens to Bobcorn beside a link to Applications; drag one
-onto the other. The app is signed only ad hoc, not notarized, so on another Mac
-macOS stops it the first time ("Apple could not verify…"). Click Done, then
-Open Anyway in System Settings → Privacy & Security. Or clear the download's
-quarantine flag before opening it:
-`xattr -dr com.apple.quarantine ~/Downloads/Bobcorn.dmg`.
+onto the other. Releases are signed with a Developer ID and notarized, so they
+open anywhere. An installer built here without those credentials is signed
+only ad hoc: on another Mac, macOS stops it the first time ("Apple could not
+verify…"); click Done, then Open Anyway in System Settings → Privacy &
+Security.
 
 ## Releases and updates
 
