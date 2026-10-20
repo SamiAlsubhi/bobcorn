@@ -1,3 +1,4 @@
+import CryptoKit
 import XCTest
 @testable import Bobcorn
 @testable import TorrentKit
@@ -223,5 +224,44 @@ final class RatingsTests: XCTestCase {
             return XCTFail("expected a failure")
         }
         XCTAssertTrue(error.localizedDescription.contains("Invalid API key"))
+    }
+}
+
+final class UpdaterTests: XCTestCase {
+    func testComparesVersionsByNumber() {
+        XCTAssertTrue(Updater.isNewer("1.10.0", than: "1.9.2"))
+        XCTAssertTrue(Updater.isNewer("1.1", than: "1.0.9"))
+        XCTAssertFalse(Updater.isNewer("1.0", than: "1.0.0"))
+        XCTAssertFalse(Updater.isNewer("0.9", than: "1.0"))
+    }
+
+    func testReadsAGitHubRelease() throws {
+        let json = """
+        {"tag_name": "v1.2.0", "draft": false, "prerelease": false, "html_url": "https://github.com/o/r/releases/tag/v1.2.0",
+         "assets": [{"name": "Bobcorn.dmg", "browser_download_url": "https://github.com/o/r/releases/download/v1.2.0/Bobcorn.dmg"},
+                    {"name": "Bobcorn.dmg.sig", "browser_download_url": "https://github.com/o/r/releases/download/v1.2.0/Bobcorn.dmg.sig"}]}
+        """
+        let release = try XCTUnwrap(Updater.parse(Data(json.utf8)))
+        XCTAssertEqual(release.version, "1.2.0")
+        XCTAssertEqual(release.installer.lastPathComponent, "Bobcorn.dmg")
+        // Without a signature there's nothing to install.
+        XCTAssertNil(Updater.parse(Data(json.replacingOccurrences(of: "Bobcorn.dmg.sig", with: "notes.txt").utf8)))
+        XCTAssertNil(Updater.parse(Data(json.replacingOccurrences(of: "\"prerelease\": false", with: "\"prerelease\": true").utf8)))
+    }
+
+    func testOnlyInstallsWhatTheReleaseKeySigned() throws {
+        let key = Curve25519.Signing.PrivateKey()
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("update-\(UUID().uuidString).dmg")
+        defer { try? FileManager.default.removeItem(at: file) }
+        try Data("installer".utf8).write(to: file)
+        let signature = Data(try key.signature(for: Data("installer".utf8)).base64EncodedString().utf8)
+        let publicKey = key.publicKey.rawRepresentation.base64EncodedString()
+        XCTAssertNoThrow(try Updater.verify(installer: file, signature: signature, key: publicKey))
+
+        let stranger = Curve25519.Signing.PrivateKey().publicKey.rawRepresentation.base64EncodedString()
+        XCTAssertThrowsError(try Updater.verify(installer: file, signature: signature, key: stranger))
+        try Data("tampered".utf8).write(to: file)
+        XCTAssertThrowsError(try Updater.verify(installer: file, signature: signature, key: publicKey))
+        XCTAssertEqual(Data(base64Encoded: Updater.publicKey)?.count, 32)
     }
 }

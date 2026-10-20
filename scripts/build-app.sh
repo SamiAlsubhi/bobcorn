@@ -4,6 +4,9 @@
 #   scripts/build-app.sh            release build
 #   scripts/build-app.sh debug      debug build
 #   scripts/build-app.sh install    release build, copied to /Applications
+#
+# VERSION=1.2.0 stamps that version in; UNIVERSAL=1 builds for both Apple
+# silicon and Intel.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -14,15 +17,21 @@ case "${1:-}" in
     install) install=1 ;;
 esac
 
-echo "==> swift build -c $config"
-swift build -c "$config" --product Bobcorn
-bin="$(swift build -c "$config" --show-bin-path)/Bobcorn"
+arch=()
+if [ "${UNIVERSAL:-0}" = 1 ]; then arch=(--arch arm64 --arch x86_64); fi
+echo "==> swift build -c $config ${arch[*]:-}"
+swift build -c "$config" ${arch[@]+"${arch[@]}"} --product Bobcorn
+bin="$(swift build -c "$config" ${arch[@]+"${arch[@]}"} --show-bin-path)/Bobcorn"
 
 app=build/Bobcorn.app
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin" "$app/Contents/MacOS/Bobcorn"
 cp Resources/Info.plist "$app/Contents/Info.plist"
+if [ -n "${VERSION:-}" ]; then
+    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$app/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$app/Contents/Info.plist"
+fi
 if [ "$config" = debug ]; then
     # A debug build keeps its own settings and data, and never claims
     # magnet links or .torrent files from the installed app.

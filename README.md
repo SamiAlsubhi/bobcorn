@@ -35,6 +35,32 @@ onto the other. The app is signed only ad hoc, not notarized, so the first time
 it opens on another Mac, macOS blocks it: Control-click it and choose Open, or
 allow it in System Settings → Privacy & Security.
 
+## Releases and updates
+
+Pushing a version tag publishes a release:
+
+```bash
+git tag v1.2.0
+```
+
+```bash
+git push origin v1.2.0
+```
+
+The [release workflow](.github/workflows/release.yml) runs the tests, builds
+the installer for Apple silicon and Intel, signs it with the repository's
+`UPDATE_SIGNING_KEY` secret and attaches `Bobcorn.dmg` and its signature to a
+GitHub release.
+
+Bobcorn checks for a newer release at launch and every six hours, and
+Bobcorn → Check for Updates… checks now. When there is one, an Update button
+appears in the top bar: it downloads the installer, refuses it unless the
+signature matches the public key in `Updater.swift`, swaps the app in place
+and relaunches. To change keys, run
+`swift scripts/sign-update.swift --new-key <file>`, put the file's contents
+in the secret and the printed public key in `Updater.swift`, and release that
+build signed with the old key first.
+
 ## Features
 
 - **Sources**: on first launch Bobcorn asks for one; more go in Settings →

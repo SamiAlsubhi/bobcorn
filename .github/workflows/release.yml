@@ -1,0 +1,36 @@
+name: Release
+
+# Pushing a tag like v1.2.0 tests the app, builds the installer for Apple
+# silicon and Intel, signs it for the in-app updater and publishes it as a
+# GitHub release, where Bobcorn's Update button finds it.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test
+        run: swift test
+
+      - name: Build the installer
+        run: VERSION="${GITHUB_REF_NAME#v}" scripts/make-installer.sh
+
+      - name: Sign it for the updater
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: swift scripts/sign-update.swift build/Bobcorn.dmg > build/Bobcorn.dmg.sig
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" build/Bobcorn.dmg build/Bobcorn.dmg.sig \
+            --title "Bobcorn ${GITHUB_REF_NAME#v}" --generate-notes

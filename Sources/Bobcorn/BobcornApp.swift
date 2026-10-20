@@ -14,6 +14,9 @@ struct BobcornApp: App {
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1280, height: 820)
         .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") { model.checkForUpdates() }
+            }
             CommandGroup(replacing: .newItem) {
                 Button("Open Torrent File…") { model.openTorrentFilePanel() }
                     .keyboardShortcut("o")

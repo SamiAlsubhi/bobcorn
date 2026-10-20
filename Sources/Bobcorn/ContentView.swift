@@ -65,7 +65,19 @@ struct ContentView: View {
         .onDrop(of: [.fileURL, .url, .plainText], isTargeted: nil) { providers in
             handleDrop(providers)
         }
-        .onAppear { model.reloadBrowse() }
+        .alert("Update to Bobcorn \(model.updater.available?.version ?? "")?", isPresented: $model.updatePromptVisible) {
+            Button("Update and Restart") { model.installUpdate() }
+            if let page = model.updater.available?.page {
+                Button("What's New") { NSWorkspace.shared.open(page) }
+            }
+            Button("Not Now", role: .cancel) {}
+        } message: {
+            Text("You have \(Updater.currentVersion). Bobcorn downloads the update, checks it's signed, installs it and restarts.")
+        }
+        .onAppear {
+            model.reloadBrowse()
+            model.updater.start()
+        }
     }
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
@@ -197,6 +209,29 @@ struct TopBar: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
             .background(RoundedRectangle(cornerRadius: 7).fill(Color.white.opacity(0.08)))
+
+            if let release = model.updater.available {
+                let busy = model.updater.state == .downloading || model.updater.state == .installing
+                Button {
+                    model.updatePromptVisible = true
+                } label: {
+                    HStack(spacing: 5) {
+                        if busy {
+                            ProgressView().controlSize(.mini)
+                        } else {
+                            Image(systemName: "arrow.down.circle.fill")
+                        }
+                        Text(busy ? "Updating…" : "Update")
+                    }
+                    .font(.system(size: 12, weight: .semibold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(Capsule().fill(Theme.accent))
+                }
+                .buttonStyle(.plain)
+                .disabled(busy)
+                .help("Bobcorn \(release.version) is available")
+            }
 
             Button {
                 model.magnetPromptVisible = true

@@ -143,6 +143,15 @@ enum DebugScript {
             } else {
                 log("no source")
             }
+        case "update":
+            // Checks the test feed (BOBCORN_UPDATE_FEED) and installs what it offers.
+            do {
+                let release = try await model.updater.check()
+                log("update offered=\(release?.version ?? "none") current=\(Updater.currentVersion)")
+                if release != nil { try await model.updater.install() }
+            } catch {
+                log("update failed: \(error.localizedDescription)")
+            }
         case "cachefolder":
             // cachefolder:<path>, or cachefolder: for the default.
             let moved = await model.moveCache(to: arg.isEmpty ? nil : URL(fileURLWithPath: arg, isDirectory: true))

@@ -3,12 +3,15 @@
 # to Applications, to install by dragging one onto the other.
 #
 #   scripts/make-installer.sh
+#   VERSION=1.2.0 scripts/make-installer.sh
+#
+# It runs on Apple silicon and Intel Macs.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-scripts/build-app.sh
+UNIVERSAL=1 scripts/build-app.sh
 
-version=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Resources/Info.plist)
+version=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" build/Bobcorn.app/Contents/Info.plist)
 dmg=build/Bobcorn.dmg
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT

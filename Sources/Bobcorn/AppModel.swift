@@ -61,6 +61,8 @@ final class AppModel {
     let apiBrowse = APIBrowseModel()
     let castDevices = CastDevices()
     let ratings = Ratings()
+    let updater = Updater()
+    var updatePromptVisible = false
     private(set) var engine: TorrentEngine
     private var engineConfig: TorrentConfiguration
     private var searchTask: Task<Void, Never>?
@@ -262,6 +264,33 @@ final class AppModel {
             return false
         }
         return true
+    }
+
+    // MARK: - Updates
+
+    func installUpdate() {
+        Task {
+            do {
+                try await updater.install()
+            } catch {
+                alertMessage = "Couldn't update Bobcorn: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// From the menu: says so when there's nothing new.
+    func checkForUpdates() {
+        Task {
+            do {
+                if try await updater.check() != nil {
+                    updatePromptVisible = true
+                } else {
+                    alertMessage = "Bobcorn \(Updater.currentVersion) is the latest version."
+                }
+            } catch {
+                alertMessage = "Couldn't check for updates: \(error.localizedDescription)"
+            }
+        }
     }
 
     func shutdown() {
