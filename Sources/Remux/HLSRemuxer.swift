@@ -24,6 +24,10 @@ public final class HLSRemuxer: Sendable {
     let audio: TrackPlan?
     /// The audio track's first timestamp, which its frames line up from.
     let audioOrigin: Int64
+    /// For a Chromecast, which can't play AC-3 and its like: the audio as AAC,
+    /// served under `cast/`. Nil when the audio plays there as it is.
+    let castAudio: AACTranscoder?
+    let castInitSegment: Data
     let boundaries: [Boundary]
     /// Seconds per segment.
     let durations: [Double]
@@ -62,12 +66,16 @@ public final class HLSRemuxer: Sendable {
             }
         }
         let audio = try audioTrack.map { try Codecs.audio($0, firstFrame: firstAudio?.data) }
+        var transcoder: AACTranscoder?
+        if let audio, let firstAudio, AACTranscoder.needed(for: audio.source.codecID) {
+            transcoder = AACTranscoder(audio, firstFrame: firstAudio.data, origin: firstAudio.time)
+        }
         let (boundaries, durations, indexed) = try plan(header, video: videoTrack)
-        return HLSRemuxer(source: source, header: header, video: video, audio: audio,
+        return HLSRemuxer(source: source, header: header, video: video, audio: audio, castAudio: transcoder,
                           audioOrigin: firstAudio?.time ?? 0, boundaries: boundaries, durations: durations, indexed: indexed)
     }
 
-    private init(source: ByteSource, header: MKVHeader, video: TrackPlan, audio: TrackPlan?,
+    private init(source: ByteSource, header: MKVHeader, video: TrackPlan, audio: TrackPlan?, castAudio: AACTranscoder?,
                  audioOrigin: Int64, boundaries: [Boundary], durations: [Double], indexed: Bool) {
         self.source = source
         self.header = header
@@ -78,6 +86,14 @@ public final class HLSRemuxer: Sendable {
         self.durations = durations
         self.indexed = indexed
         initSegment = MP4.initSegment([video] + (audio.map { [$0] } ?? []))
+        self.castAudio = castAudio
+        if let castAudio, let audio {
+            let aac = TrackPlan(source: audio.source, isVideo: false, timescale: UInt32(castAudio.rate), sampleEntry: castAudio.sampleEntry,
+                                codecName: "AAC", frameDuration: .fixed(1024), displayWidth: 0, displayHeight: 0)
+            castInitSegment = MP4.initSegment([video, aac])
+        } else {
+            castInitSegment = initSegment
+        }
     }
 
     private static func score(_ t: MKVTrack, _ preferred: MKVTrack?) -> Int {
@@ -148,29 +164,36 @@ public final class HLSRemuxer: Sendable {
         return parts.joined(separator: ", ")
     }
 
-    /// Answers a request for `index.m3u8`, `init.mp4` or `<n>.m4s`.
+    /// Answers a request for `index.m3u8`, `init.mp4` or `<n>.m4s`, or the
+    /// same under `cast/`, for a Chromecast.
     public func respond(to path: String) async throws -> (contentType: String, body: Data)? {
-        let name = path.split(separator: "/").last.map(String.init) ?? ""
+        let parts = path.split(separator: "/")
+        let name = parts.last.map(String.init) ?? ""
+        let cast = parts.dropLast().last == "cast"
         switch name {
         case "index.m3u8":
             return ("application/vnd.apple.mpegurl", Data(playlist.utf8))
         case "init.mp4":
-            return ("video/mp4", initSegment)
+            return ("video/mp4", cast ? castInitSegment : initSegment)
         default:
             guard name.hasSuffix(".m4s"), let i = Int(name.dropLast(4)), boundaries.indices.contains(i) else { return nil }
-            return ("video/iso.segment", try await segment(i))
+            return ("video/iso.segment", try await segment(i, cast: cast))
         }
     }
 
     public var segmentCount: Int { boundaries.count }
 
-    public func segment(_ i: Int) async throws -> Data {
-        try await cache.data(i) { [self] in try await makeSegment(i) }
+    /// Whether a Chromecast gets different audio than the Mac plays.
+    public var transcodesForCast: Bool { castAudio != nil }
+
+    public func segment(_ i: Int, cast: Bool = false) async throws -> Data {
+        let transcode = cast && castAudio != nil
+        return try await cache.data(transcode ? -1 - i : i) { [self] in try await makeSegment(i, transcode: transcode) }
     }
 
     // MARK: - Segments
 
-    private func makeSegment(_ index: Int) async throws -> Data {
+    private func makeSegment(_ index: Int, transcode: Bool = false) async throws -> Data {
         let start = boundaries[index]
         let next = boundaries.indices.contains(index + 1) ? boundaries[index + 1] : nil
         let r = EBMLReader(source, at: start.position, chunk: 1 << 20)
@@ -188,6 +211,10 @@ public final class HLSRemuxer: Sendable {
         var stopTime: Int64?
         var audioPastStop = audioNumber == nil
         var clustersAfterStop = 0
+        // AAC for a Chromecast starts a little after each keyframe and needs a
+        // little past the end to finish its last frame.
+        let transcoder = transcode ? castAudio : nil
+        let tail = transcoder.map { $0.lead + 150_000_000 } ?? 0
 
         while let c = try await r.nextCluster(scale: header.timestampScale, end: header.segmentEnd) {
             for b in c.blocks {
@@ -207,25 +234,33 @@ public final class HLSRemuxer: Sendable {
                     }
                 } else if b.track == audioNumber {
                     for f in b.frames { sounds.append((b.time, audioPrefix + f)) }
-                    if let stopTime, b.time >= stopTime { audioPastStop = true }
+                    if let stopTime, b.time >= stopTime + tail { audioPastStop = true }
                 }
             }
             if stopTime != nil {
                 // Audio can trail the video it plays with by a little.
                 clustersAfterStop += 1
-                if audioPastStop || clustersAfterStop >= 2 { break }
+                if audioPastStop || clustersAfterStop >= (tail > 0 ? 3 : 2) { break }
             }
         }
 
-        // Audio by time: from this segment's first keyframe (or the start of
-        // the file) to the next segment's.
-        let audioFrom = index == 0 ? Int64.min : (startTime ?? .max)
-        let audioTo = stopTime ?? .max
-        sounds = sounds.filter { $0.time >= audioFrom && $0.time < audioTo }
-
         var tracks: [FragmentTrack] = []
         if !frames.isEmpty { tracks.append(videoFragment(frames)) }
-        if let audio, !sounds.isEmpty { tracks.append(audioFragment(sounds, audio, id: 2)) }
+        if let transcoder {
+            if index == 0 || startTime != nil {
+                let from = index == 0 ? Int64.min : startTime! + transcoder.lead
+                let to = stopTime.map { $0 + transcoder.lead }
+                let window = from == .min ? sounds : sounds.filter { $0.time >= from - transcoder.lead - 100_000_000 }
+                if let track = try transcoder.encode(window, from: from, to: to) { tracks.append(track) }
+            }
+        } else {
+            // Audio by time: from this segment's first keyframe (or the start
+            // of the file) to the next segment's.
+            let audioFrom = index == 0 ? Int64.min : (startTime ?? .max)
+            let audioTo = stopTime ?? .max
+            sounds = sounds.filter { $0.time >= audioFrom && $0.time < audioTo }
+            if let audio, !sounds.isEmpty { tracks.append(audioFragment(sounds, audio, id: 2)) }
+        }
         return MP4.fragment(sequence: UInt32(index + 1), tracks: tracks)
     }
 

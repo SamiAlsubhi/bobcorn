@@ -65,6 +65,8 @@ public enum CastError: LocalizedError {
 public final class CastSession: @unchecked Sendable {
     public let device: CastDevice
     public var onStatus: (@Sendable (CastStatus) -> Void)?
+    /// Every message and state change, for diagnosing a device.
+    public var trace: (@Sendable (String) -> Void)?
 
     /// The Default Media Receiver.
     static let appID = "CC1AD845"
@@ -129,6 +131,7 @@ public final class CastSession: @unchecked Sendable {
     }
 
     private func stateChanged(_ state: NWConnection.State) {
+        trace?("connection \(state)")
         switch state {
         case .ready:
             receive()
@@ -181,6 +184,7 @@ public final class CastSession: @unchecked Sendable {
     }
 
     private func handle(_ m: CastMessage) {
+        trace?("← \(m.source) \(m.namespace.split(separator: ".").last ?? "") \(m.payload.prefix(600))")
         guard let json = m.json, let type = json["type"] as? String else { return }
         switch (m.namespace, type) {
         case (CastMessage.Namespace.heartbeat, "PING"):
@@ -246,6 +250,7 @@ public final class CastSession: @unchecked Sendable {
         }
         let source = destination == "receiver-0" ? "sender-0" : senderID
         let m = CastMessage(source: source, destination: destination, namespace: namespace, json: json)
+        trace?("→ \(destination) \(namespace.split(separator: ".").last ?? "") \(m.payload)")
         connection?.send(content: m.framed, completion: .contentProcessed { _ in })
     }
 

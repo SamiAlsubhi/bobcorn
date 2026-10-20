@@ -266,6 +266,10 @@ final class StreamConnection: @unchecked Sendable {
         let method = String(requestLine[0])
         var path = String(requestLine[1])
         if lan {
+            #if DEBUG
+            print("[lan] \(method) \(path.split(separator: "/").suffix(2).joined(separator: "/")) from \(connection.endpoint)")
+            fflush(stdout)
+            #endif
             guard let secret = server?.secret, path.hasPrefix("/\(secret)/") else { return respond(status: "403 Forbidden") }
             path = String(path.dropFirst(secret.count + 1))
             if method == "OPTIONS" {

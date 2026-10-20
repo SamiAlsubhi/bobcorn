@@ -166,6 +166,56 @@ final class RemuxIntegrationTests: XCTestCase {
         ])
     }
 
+    /// A Chromecast gets AC-3 as AAC: the tone carries on across every
+    /// segment boundary with no gap and no click.
+    func testCastVariantTurnsAC3IntoSeamlessAAC() async throws {
+        let mkv = try make("h264-ac3-cast.mkv", video + tone(440, channels: 6) + ["-c:v", "libx264", "-preset", "veryfast", "-g", "48", "-c:a", "ac3"])
+        let remuxer = try await HLSRemuxer.open(try FileByteSource(url: mkv))
+        XCTAssertTrue(remuxer.transcodesForCast)
+        let castInit = try await remuxer.respond(to: "/t/cast/init.mp4")
+        var data = try XCTUnwrap(castInit).body
+        for i in 0..<remuxer.segmentCount { data += try await remuxer.segment(i, cast: true) }
+        let out = Self.dir.appendingPathComponent("cast.mp4")
+        try data.write(to: out)
+
+        let asset = AVURLAsset(url: out)
+        let tracks = try await asset.loadTracks(withMediaType: .audio)
+        let track = try XCTUnwrap(tracks.first)
+        let formats = try await track.load(.formatDescriptions)
+        let format = try XCTUnwrap(formats.first)
+        XCTAssertEqual(CMFormatDescriptionGetMediaSubType(format), kAudioFormatMPEG4AAC)
+        let reader = try AVAssetReader(asset: asset)
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
+            AVFormatIDKey: kAudioFormatLinearPCM, AVLinearPCMBitDepthKey: 32, AVLinearPCMIsFloatKey: true,
+            AVLinearPCMIsNonInterleaved: false, AVNumberOfChannelsKey: 1,
+        ])
+        reader.add(output)
+        XCTAssertTrue(reader.startReading())
+        var samples: [Float] = []
+        while let buffer = output.copyNextSampleBuffer(), let block = CMSampleBufferGetDataBuffer(buffer) {
+            var length = 0
+            var pointer: UnsafeMutablePointer<CChar>?
+            CMBlockBufferGetDataPointer(block, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &length, dataPointerOut: &pointer)
+            pointer?.withMemoryRebound(to: Float.self, capacity: length / 4) { samples += UnsafeBufferPointer(start: $0, count: length / 4) }
+        }
+        XCTAssertEqual(Double(samples.count) / 48000, 30, accuracy: 0.2)
+
+        // After the first fade-in: no stretch of 5 ms goes quiet, and no
+        // sample jumps much further than a 440 Hz sine ever does.
+        let body = samples.dropFirst(4800).dropLast(4800)
+        let peak = body.map(abs).max() ?? 0
+        XCTAssertGreaterThan(peak, 0.01)
+        let windows = stride(from: body.startIndex, to: body.endIndex - 240, by: 240).map { start in
+            (body[start..<start + 240].map { $0 * $0 }.reduce(0, +) / 240).squareRoot()
+        }
+        let quietest = windows.min() ?? 0
+        let steps = zip(body.dropFirst(), body).map { abs($0 - $1) }
+        let jump = (steps.max() ?? 0) / (peak * Float(2 * Double.pi * 440 / 48000))
+        print("cast audio: peak \(peak), quietest 5 ms RMS \(quietest), largest jump \(jump)× a sine's")
+        XCTAssertGreaterThan(quietest, peak * 0.5, "a gap in the audio")
+        XCTAssertLessThan(jump, 2, "a click in the audio")
+    }
+
     func testH264WithEAC3() async throws {
         try await check("h264-eac3.mkv", video + tone(550, channels: 6) + ["-c:v", "libx264", "-preset", "veryfast", "-g", "48", "-c:a", "eac3"])
     }

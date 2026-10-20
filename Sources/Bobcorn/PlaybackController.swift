@@ -408,6 +408,12 @@ final class PlaybackController {
         session.onStatus = { [weak self] status in
             MainActor.assumeIsolated { self?.castStatusChanged(status, from: session) }
         }
+        #if DEBUG
+        session.trace = { line in
+            print("[cast] \(line)")
+            fflush(stdout)
+        }
+        #endif
         Task { [weak self] in
             do {
                 let address = try await session.connect()
@@ -452,7 +458,10 @@ final class PlaybackController {
                 endCasting("Couldn't share the stream on the network: \(error.localizedDescription)")
                 return
             }
-            guard self.cast === cast, let lan = app.engine.server.lanURL(for: url, host: address) else { return }
+            // A remuxed stream has a version for Chromecasts, with AAC audio
+            // when its own (AC-3 and the like) needs a TV that decodes it.
+            let castURL = self.fileURL != nil ? url.deletingLastPathComponent().appendingPathComponent("cast/index.m3u8") : url
+            guard self.cast === cast, let lan = app.engine.server.lanURL(for: castURL, host: address) else { return }
             cast.load(media(lan))
         }
     }
@@ -480,8 +489,8 @@ final class PlaybackController {
         case .finished:
             saveProgress(finished: true)
             if hasNext && Pref.autoplay { playNext() }
-        case .failed(let why):
-            endCasting(why)
+        case .failed:
+            endCasting("\(castDevice?.name ?? "The Chromecast") couldn't play this video's format")
         case .ended:
             endCasting("Casting to \(castDevice?.name ?? "the Chromecast") stopped")
         case .idle:

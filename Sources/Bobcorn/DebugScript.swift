@@ -129,6 +129,8 @@ enum DebugScript {
                 if let notice = pb.notice { log("  notice: \(notice)") }
                 if let remux = pb.remuxSummary { log("  remuxed: \(remux)") }
                 if let reason = pb.externalReason { log("  external: \(reason)") }
+                if let device = pb.castDevice { log("  casting to \(device.name): \(pb.castStatus.map { "\($0.state) at \(Int($0.currentTime))s of \($0.duration.map { String(Int($0)) } ?? "?")" } ?? "-")") }
+                if let notice = pb.notice, pb.castDevice == nil { log("  last notice: \(notice)") }
             } else if let flow = model.torrentFlow {
                 log("flow info=\(flow.info?.name ?? "nil") peers=\(flow.stats.connectedPeers) error=\(flow.error ?? "-")")
                 for f in flow.videoFiles {
@@ -172,6 +174,15 @@ enum DebugScript {
             guard let url = model.playback?.streamURL else { return log("nothing playing") }
             _ = try? await model.engine.server.startLAN()
             log("lan \(model.engine.server.lanURL(for: url, host: arg)?.absoluteString ?? "-")")
+        case "cast":
+            // Casts what's playing to the first Chromecast found.
+            model.castDevices.start()
+            for _ in 0..<20 where model.castDevices.devices.isEmpty {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
+            guard let device = model.castDevices.devices.first, let pb = model.playback else { return log("no device or nothing playing") }
+            log("casting to \(device.name)")
+            pb.startCasting(to: device)
         case "seek":
             _ = await model.playback?.player?.seek(to: CMTime(seconds: Double(arg) ?? 0, preferredTimescale: 600))
         case "close":

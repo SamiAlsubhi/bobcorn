@@ -167,3 +167,37 @@ private final class StateLog: @unchecked Sendable {
     func append(_ s: CastStatus) { lock.lock(); states.append(s); lock.unlock() }
     var last: CastStatus? { lock.lock(); defer { lock.unlock() }; return states.last }
 }
+
+/// Against a real device: CAST_HOST=<address> swift test --filter RealDeviceTests
+final class RealDeviceTests: XCTestCase {
+    func testConnectsToARealDevice() async throws {
+        let env = ProcessInfo.processInfo.environment
+        let device: CastDevice
+        if env["CAST_BROWSE"] != nil {
+            // The way the app finds it: over Bonjour.
+            let browser = CastBrowser()
+            let found = expectation(description: "found")
+            let box = DeviceBox()
+            browser.onChange = { devices in
+                if let d = devices.first, box.device == nil { box.device = d; found.fulfill() }
+            }
+            browser.start()
+            await fulfillment(of: [found], timeout: 10)
+            browser.stop()
+            device = try XCTUnwrap(box.device)
+            print("[cast] found \(device.name) at \(device.endpoint)")
+        } else {
+            guard let host = env["CAST_HOST"] else { throw XCTSkip("set CAST_HOST or CAST_BROWSE") }
+            device = CastDevice(id: "real", name: host, model: nil, endpoint: .hostPort(host: NWEndpoint.Host(host), port: 8009))
+        }
+        let session = CastSession(device: device)
+        session.trace = { print("[cast] \($0)") }
+        let address = try await session.connect()
+        print("[cast] connected; this Mac is \(address)")
+        try await Task.sleep(nanoseconds: 2_000_000_000)
+        session.stop()
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+    }
+}
+
+private final class DeviceBox: @unchecked Sendable { var device: CastDevice? }
