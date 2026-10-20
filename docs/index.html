@@ -156,7 +156,10 @@
   .install-steps li { counter-increment: s; display: flex; gap: 16px; align-items: flex-start; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 20px; }
   .install-steps li::before { content: counter(s); flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: var(--accent); font-weight: 800; font-size: 14px; }
   .install-steps strong { display: block; }
-  .install-steps span { color: var(--secondary); font-size: 15px; }
+  .install-steps span { color: var(--secondary); font-size: 15px; display: block; }
+  .install-steps li > div { min-width: 0; }
+  .install-steps .alt { margin-top: 10px; color: var(--tertiary); font-size: 14px; }
+  .install-steps .copyable { margin: 8px 0 0; }
   kbd { font: 600 13px -apple-system, sans-serif; background: rgba(255, 255, 255, 0.1); border-radius: 5px; padding: 1px 6px; }
 
   footer { border-top: 1px solid var(--line); padding: 36px 0 48px; color: var(--tertiary); font-size: 14px; }
@@ -367,7 +370,9 @@
       <ol class="install-steps">
         <li><div><strong>Download Bobcorn</strong><span><a class="download" href="https://github.com/SamiAlsubhi/bobcorn/releases/latest/download/Bobcorn.dmg">Bobcorn.dmg</a> runs on Apple silicon and Intel Macs with macOS 14 or later.</span></div></li>
         <li><div><strong>Drag it to Applications</strong><span>Open the disk image and drag Bobcorn onto the Applications folder beside it.</span></div></li>
-        <li><div><strong>Open it the first time</strong><span>Bobcorn isn't notarized by Apple yet, so macOS asks first: <kbd>Control</kbd>-click it, choose Open, then Open again. Or allow it in System Settings → Privacy &amp; Security.</span></div></li>
+        <li><div><strong>Allow it the first time</strong><span>Bobcorn isn't notarized by Apple yet, so macOS stops it with “Apple could not verify…”. Click <strong>Done</strong>, then in System Settings → Privacy &amp; Security, scroll down and click <strong>Open Anyway</strong>. You may be asked again when Bobcorn first opens.</span>
+          <span class="alt">Or skip the prompts: before opening the download, run this in Terminal.</span>
+          <span class="copyable"><code id="unquarantine">xattr -dr com.apple.quarantine ~/Downloads/Bobcorn.dmg</code><button type="button" data-copy="unquarantine">Copy</button></span></div></li>
         <li><div><strong>Add a source</strong><span>Follow <a href="#sources">the steps above</a>, then press play. Updates arrive in the app.</span></div></li>
       </ol>
     </div>
