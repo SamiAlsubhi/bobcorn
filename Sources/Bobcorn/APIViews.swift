@@ -117,16 +117,16 @@ struct APICard: View {
                     }
                     .overlay(alignment: .bottomLeading) {
                         let tomatometer = model.ratings.tomatometer[title.id]
-                        if title.stars != nil || tomatometer != nil {
+                        if title.rating != nil || tomatometer != nil {
                             HStack(spacing: 6) {
-                                if let stars = title.stars {
+                                if let rating = title.rating {
                                     HStack(spacing: 3) {
                                         Image(systemName: "star.fill")
                                             .font(.system(size: 9, weight: .heavy))
                                             .foregroundStyle(Theme.gold)
-                                        Text(String(format: "%.1f", stars))
+                                        Text("\(Int(rating.rounded()))%")
                                     }
-                                    .help(title.rating.map { "Rated \(Int($0.rounded()))%" } ?? "")
+                                    .help("Rated \(Int(rating.rounded()))% by \(title.votes.map { "\($0.formatted()) people" } ?? "the source")")
                                 }
                                 if let tomatometer {
                                     TomatometerLabel(score: tomatometer, size: 11)

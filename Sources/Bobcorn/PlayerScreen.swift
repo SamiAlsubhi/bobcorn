@@ -9,14 +9,16 @@ struct PlayerScreen: View {
     @AppStorage(Pref.subtitleSize) private var subtitleSize = 26.0
     @State private var chromeVisible = true
     @State private var hideTask: Task<Void, Never>?
+    @FocusState private var keyboardFocus: Bool
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
 
             if let player = controller.player, !controller.isCasting {
-                VideoSurface(player: player)
+                VideoSurface(player: player, controller: controller)
                     .ignoresSafeArea()
+                    .onTapGesture(count: 2) { NSApp.keyWindow?.toggleFullScreen(nil) }
             }
 
             if let text = controller.cueText {
@@ -53,6 +55,10 @@ struct PlayerScreen: View {
                 topBar
                     .opacity(chromeVisible || controller.phase != .playing || controller.isCasting ? 1 : 0)
                 Spacer()
+                if controller.phase == .playing && !controller.isCasting {
+                    ControlBar(controller: controller)
+                        .opacity(chromeVisible || controller.isPaused ? 1 : 0)
+                }
             }
 
             if let notice = controller.notice {
@@ -80,6 +86,14 @@ struct PlayerScreen: View {
         }
         .onDisappear { model.castDevices.stop() }
         .onExitCommand { model.closePlayback() }
+        .focusable()
+        .focusEffectDisabled()
+        .focused($keyboardFocus)
+        .onAppear { keyboardFocus = true }
+        .onKeyPress(.space) { controller.togglePlay(); poke(); return .handled }
+        .onKeyPress(.leftArrow) { controller.skip(-10); poke(); return .handled }
+        .onKeyPress(.rightArrow) { controller.skip(10); poke(); return .handled }
+        .onKeyPress("f") { NSApp.keyWindow?.toggleFullScreen(nil); return .handled }
     }
 
     private var topBar: some View {
@@ -207,21 +221,185 @@ private struct ChromeButtonStyle: ButtonStyle {
 /// AVKit's player view, with its own floating transport controls.
 struct VideoSurface: NSViewRepresentable {
     let player: AVPlayer
+    let controller: PlaybackController
 
-    func makeNSView(context: Context) -> AVPlayerView {
-        let view = AVPlayerView()
-        view.player = player
-        view.controlsStyle = .floating
-        view.showsFullScreenToggleButton = true
-        view.allowsPictureInPicturePlayback = true
-        view.videoGravity = .resizeAspect
-        DispatchQueue.main.async { view.window?.makeFirstResponder(view) }
+    func makeNSView(context: Context) -> PlayerLayerView {
+        let view = PlayerLayerView()
+        view.playerLayer.player = player
+        controller.attach(view.playerLayer)
         return view
     }
 
-    func updateNSView(_ view: AVPlayerView, context: Context) {
-        if view.player !== player { view.player = player }
+    func updateNSView(_ view: PlayerLayerView, context: Context) {
+        if view.playerLayer.player !== player { view.playerLayer.player = player }
     }
+}
+
+/// The video alone; Bobcorn draws its own controls over it.
+final class PlayerLayerView: NSView {
+    let playerLayer = AVPlayerLayer()
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer = CALayer()
+        layer?.backgroundColor = NSColor.black.cgColor
+        playerLayer.videoGravity = .resizeAspect
+        layer?.addSublayer(playerLayer)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        playerLayer.frame = bounds
+        CATransaction.commit()
+    }
+}
+
+// MARK: - Controls
+
+/// Play, seek and volume, over the bottom of the video. The seek bar shows
+/// what's downloaded as well as what's played.
+private struct ControlBar: View {
+    @Bindable var controller: PlaybackController
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Scrubber(controller: controller)
+            HStack(spacing: 18) {
+                Button { controller.togglePlay() } label: {
+                    Image(systemName: controller.isPaused ? "play.fill" : "pause.fill").font(.system(size: 18)).frame(width: 22)
+                }
+                .help(controller.isPaused ? "Play (Space)" : "Pause (Space)")
+                Button { controller.skip(-10) } label: { Image(systemName: "gobackward.10") }
+                    .help("Back 10 seconds (←)")
+                Button { controller.skip(10) } label: { Image(systemName: "goforward.10") }
+                    .help("Forward 10 seconds (→)")
+                Text("\(formatTime(controller.currentTime)) / \(formatTime(controller.duration))")
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .foregroundStyle(Theme.secondary)
+                Spacer()
+                bufferLabel
+                HStack(spacing: 6) {
+                    Button { controller.volume = controller.volume > 0 ? 0 : 1 } label: {
+                        Image(systemName: controller.volume == 0 ? "speaker.slash.fill" : controller.volume < 0.5 ? "speaker.wave.1.fill" : "speaker.wave.2.fill")
+                            .frame(width: 20)
+                    }
+                    .help(controller.volume == 0 ? "Unmute" : "Mute")
+                    Slider(value: $controller.volume, in: 0...1)
+                        .controlSize(.mini)
+                        .frame(width: 80)
+                        .tint(.white)
+                }
+                AirPlayButton()
+                    .frame(width: 22, height: 22)
+                    .help("AirPlay")
+                if controller.canPictureInPicture {
+                    Button { controller.togglePictureInPicture() } label: { Image(systemName: "pip.enter") }
+                        .help("Picture in Picture")
+                }
+                Button { NSApp.keyWindow?.toggleFullScreen(nil) } label: {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                }
+                .help("Full Screen (F)")
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(.white)
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 34)
+        .padding(.bottom, 16)
+        .background(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black.opacity(0.6), location: 0.3),
+                                           .init(color: .black.opacity(0.85), location: 1)], startPoint: .top, endPoint: .bottom))
+    }
+
+    @ViewBuilder
+    private var bufferLabel: some View {
+        if controller.isFullyDownloaded {
+            Label("Downloaded", systemImage: "checkmark.circle.fill")
+                .help("The whole video is on this Mac")
+        } else if let ahead = controller.bufferedAhead {
+            Label(ahead >= 1 ? "\(formatTime(ahead)) buffered" : "Buffering", systemImage: "arrow.down.circle")
+                .help("Downloaded ahead of where you are\(controller.isPaused ? "; it keeps downloading while paused" : "")")
+        }
+        EmptyView()
+    }
+}
+
+/// Played, downloaded and not yet here, along the length of the video.
+private struct Scrubber: View {
+    let controller: PlaybackController
+    @State private var dragging: Double?
+    @State private var hover: Double?
+
+    var body: some View {
+        GeometryReader { geo in
+            let width = max(1, geo.size.width)
+            let duration = controller.duration
+            let played = duration > 0 ? min(1, (dragging ?? controller.currentTime / duration)) : 0
+            let tall = hover != nil || dragging != nil
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.white.opacity(0.18))
+                ForEach(Array(controller.downloaded.enumerated()), id: \.offset) { _, run in
+                    Rectangle()
+                        .fill(Color.white.opacity(0.42))
+                        .frame(width: max(1, width * (run.upperBound - run.lowerBound)))
+                        .offset(x: width * run.lowerBound)
+                }
+                Capsule().fill(Theme.accent).frame(width: width * played)
+            }
+            .frame(height: tall ? 7 : 4)
+            .clipShape(Capsule())
+            .frame(maxHeight: .infinity)
+            .overlay(alignment: .leading) {
+                Circle()
+                    .fill(.white)
+                    .frame(width: 13, height: 13)
+                    .shadow(radius: 2)
+                    .offset(x: width * played - 6.5)
+                    .opacity(tall ? 1 : 0)
+            }
+            .overlay(alignment: .topLeading) {
+                if let at = dragging ?? hover, duration > 0 {
+                    Text(formatTime(at * duration))
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(.black.opacity(0.8)))
+                        .fixedSize()
+                        .offset(x: min(max(0, width * at - 24), width - 52), y: -22)
+                }
+            }
+            .contentShape(Rectangle())
+            .gesture(DragGesture(minimumDistance: 0)
+                .onChanged { dragging = min(1, max(0, $0.location.x / width)) }
+                .onEnded { _ in
+                    if let at = dragging, duration > 0 { controller.seek(to: at * duration) }
+                    dragging = nil
+                })
+            .onContinuousHover { phase in
+                if case .active(let p) = phase { hover = min(1, max(0, p.x / width)) } else { hover = nil }
+            }
+            .animation(.easeOut(duration: 0.12), value: tall)
+        }
+        .frame(height: 16)
+    }
+}
+
+/// The system's AirPlay menu.
+private struct AirPlayButton: NSViewRepresentable {
+    func makeNSView(context: Context) -> AVRoutePickerView {
+        let picker = AVRoutePickerView()
+        picker.isRoutePickerButtonBordered = false
+        picker.setRoutePickerButtonColor(.white, for: .normal)
+        return picker
+    }
+
+    func updateNSView(_ view: AVRoutePickerView, context: Context) {}
 }
 
 private struct StatsChip: View {

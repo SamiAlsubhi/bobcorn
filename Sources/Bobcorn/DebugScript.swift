@@ -128,6 +128,7 @@ enum DebugScript {
                 if let e = pb.player?.currentItem?.error { log("  item error: \(e)") }
                 if let notice = pb.notice { log("  notice: \(notice)") }
                 if let remux = pb.remuxSummary { log("  remuxed: \(remux)") }
+                log("  paused=\(pb.isPaused) at \(Int(pb.currentTime))s of \(Int(pb.duration))s, buffered ahead \(pb.bufferedAhead.map { "\(Int($0))s" } ?? "-"), downloaded \(pb.downloaded.map { String(format: "%.0f–%.0f%%", $0.lowerBound * 100, $0.upperBound * 100) }.joined(separator: ", ")), file \(Int((pb.stats?.selectedProgress ?? 0) * 100))%")
                 if let reason = pb.externalReason { log("  external: \(reason)") }
                 if let device = pb.castDevice { log("  casting to \(device.name): \(pb.castStatus.map { "\($0.state) at \(Int($0.currentTime))s of \($0.duration.map { String(Int($0)) } ?? "?")" } ?? "-")") }
                 if let notice = pb.notice, pb.castDevice == nil { log("  last notice: \(notice)") }
@@ -183,6 +184,10 @@ enum DebugScript {
             guard let device = model.castDevices.devices.first, let pb = model.playback else { return log("no device or nothing playing") }
             log("casting to \(device.name)")
             pb.startCasting(to: device)
+        case "pause":
+            model.playback?.player?.pause()
+        case "resume":
+            model.playback?.player?.play()
         case "seek":
             _ = await model.playback?.player?.seek(to: CMTime(seconds: Double(arg) ?? 0, preferredTimescale: 600))
         case "close":

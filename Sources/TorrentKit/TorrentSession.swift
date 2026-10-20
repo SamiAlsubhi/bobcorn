@@ -315,6 +315,37 @@ public final class TorrentSession: @unchecked Sendable {
         return out
     }
 
+    /// The parts of a file that are downloaded, as fractions of its length,
+    /// in order and merged.
+    public func downloadedRanges(of fileIndex: Int) async -> [ClosedRange<Double>] {
+        await withCheckedContinuation { (c: CheckedContinuation<[ClosedRange<Double>], Never>) in
+            queue.async { [self] in
+                guard let info, info.files.indices.contains(fileIndex) else { return c.resume(returning: []) }
+                let file = info.files[fileIndex]
+                guard file.length > 0, let range = info.pieceRange(for: file) else { return c.resume(returning: []) }
+                var out: [ClosedRange<Double>] = []
+                var runStart: Int64?
+                func close(at end: Int64) {
+                    guard let start = runStart else { return }
+                    let lo = Double(max(0, start - file.offset)) / Double(file.length)
+                    let hi = Double(min(file.length, end - file.offset)) / Double(file.length)
+                    if hi > lo { out.append(lo...hi) }
+                    runStart = nil
+                }
+                for i in range {
+                    let pieceStart = info.pieceOffset(i)
+                    if have[i] {
+                        if runStart == nil { runStart = pieceStart }
+                    } else {
+                        close(at: pieceStart)
+                    }
+                }
+                close(at: file.offset + file.length)
+                c.resume(returning: out)
+            }
+        }
+    }
+
     /// Reads up to `maxLength` bytes of a file, waiting for the piece that
     /// holds `offset` and moving the stream's priority window there. Returns
     /// at most to the end of that piece.

@@ -1,5 +1,6 @@
 import AVFoundation
 import AppKit
+import AVKit
 import CastKit
 import Observation
 import Remux
@@ -67,6 +68,18 @@ final class PlaybackController {
     private(set) var activeSubtitleID: String?
     private(set) var cueText: String?
     private(set) var localSubtitles: [SubtitleTrack] = []
+    /// Where playback is and how long the video runs, in seconds.
+    private(set) var currentTime: Double = 0
+    private(set) var duration: Double = 0
+    private(set) var isPaused = false
+    /// The parts of the playing file that are downloaded, as fractions.
+    private(set) var downloaded: [ClosedRange<Double>] = []
+    var volume: Float = 1 {
+        didSet { player?.volume = volume }
+    }
+    /// The torrent file playing, whose download the seek bar shows.
+    private var currentFile: TorrentFile?
+    private var pictureInPicture: AVPictureInPictureController?
     /// The Chromecast playing this instead of the Mac, if any.
     private(set) var castDevice: CastDevice?
     private(set) var castStatus: CastStatus?
@@ -207,6 +220,7 @@ final class PlaybackController {
     /// format, as HLS remuxed on the fly when it's Matroska with codecs macOS
     /// decodes, and otherwise through another player.
     private func stream(_ file: TorrentFile, from s: TorrentSession, app: AppModel) async throws {
+        currentFile = file
         let url = try await app.engine.streamURL(for: s, file: file)
         guard !Task.isCancelled else { return }
         viaTorrent = true
@@ -276,6 +290,7 @@ final class PlaybackController {
         item.preferredForwardBufferDuration = 20
         let p = player ?? AVPlayer()
         p.replaceCurrentItem(with: item)
+        p.volume = volume
         player = p
         attachObservers(p, item)
         p.play()
@@ -325,6 +340,7 @@ final class PlaybackController {
 
     private func timeControlChanged(_ p: AVPlayer) {
         guard p === player else { return }
+        isPaused = p.timeControlStatus == .paused
         switch p.timeControlStatus {
         case .playing:
             hasStarted = true
@@ -340,6 +356,8 @@ final class PlaybackController {
     }
 
     private func tick(_ seconds: Double) {
+        if seconds.isFinite { currentTime = seconds }
+        if let d = player?.currentItem?.duration.seconds, d.isFinite, d > 0, d != duration { duration = d }
         if !cues.isEmpty {
             let text = SubtitleParser.cue(at: seconds, in: cues)?.text
             if text != cueText { cueText = text }
@@ -363,6 +381,10 @@ final class PlaybackController {
         let st = await s.stats()
         guard s === session else { return }
         stats = st
+        if let file = currentFile {
+            let ranges = await s.downloadedRanges(of: file.index)
+            if s === session, ranges != downloaded { downloaded = ranges }
+        }
         if !hasStarted {
             switch st.phase {
             case .fetchingMetadata:
@@ -389,6 +411,49 @@ final class PlaybackController {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(url.absoluteString, forType: .string)
         show("Stream URL copied")
+    }
+
+    // MARK: - Controls
+
+    func togglePlay() {
+        guard let player else { return }
+        if player.timeControlStatus == .paused { player.play() } else { player.pause() }
+    }
+
+    func seek(to seconds: Double) {
+        let target = max(0, duration > 0 ? min(seconds, duration - 1) : seconds)
+        currentTime = target
+        player?.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+    }
+
+    func skip(_ seconds: Double) {
+        seek(to: currentTime + seconds)
+    }
+
+    /// Seconds downloaded ahead of the play position, or nil before there's
+    /// a file to measure. The whole rest of the file counts once it's all here.
+    var bufferedAhead: Double? {
+        guard duration > 0, currentFile != nil else { return nil }
+        let here = currentTime / duration
+        guard let run = downloaded.first(where: { $0.lowerBound <= here + 0.001 && $0.upperBound >= here }) else { return 0 }
+        return max(0, (run.upperBound - here) * duration)
+    }
+
+    var isFullyDownloaded: Bool {
+        downloaded.count == 1 && downloaded[0].lowerBound <= 0.0001 && downloaded[0].upperBound >= 0.9999
+    }
+
+    /// The video's layer, for picture in picture.
+    func attach(_ layer: AVPlayerLayer) {
+        guard AVPictureInPictureController.isPictureInPictureSupported(), pictureInPicture?.playerLayer !== layer else { return }
+        pictureInPicture = AVPictureInPictureController(playerLayer: layer)
+    }
+
+    var canPictureInPicture: Bool { pictureInPicture != nil }
+
+    func togglePictureInPicture() {
+        guard let pip = pictureInPicture else { return }
+        if pip.isPictureInPictureActive { pip.stopPictureInPicture() } else { pip.startPictureInPicture() }
     }
 
     // MARK: - Chromecast
@@ -613,6 +678,10 @@ final class PlaybackController {
         viaTorrent = false
         stats = nil
         streamURL = nil
+        currentFile = nil
+        downloaded = []
+        currentTime = 0
+        duration = 0
         fileURL = nil
         remuxSummary = nil
         externalReason = nil
