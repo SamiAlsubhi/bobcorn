@@ -93,6 +93,14 @@ enum DebugScript {
             } catch {
                 log("details failed: \(error)")
             }
+        case "addsheet":
+            // addsheet:<name>|<base url>: the Add Source form, filled in.
+            let parts = arg.components(separatedBy: "|")
+            model.addSourceDraft = CustomSource(kind: .api, name: parts.first ?? "", feedURL: parts.count > 1 ? parts[1] : "")
+            model.addSourceVisible = true
+        case "closesheet":
+            model.addSourceVisible = false
+            model.addSourceDraft = CustomSource(kind: .api, name: "", feedURL: "")
         case "clearsources":
             for s in model.sources.sources { model.sources.remove(s.id) }
             model.sourcesChanged()
@@ -193,9 +201,11 @@ enum DebugScript {
         }
         if capture(window, url) {
             log("wrote \(url.path)")
-            if let sheet = window.attachedSheet {
-                let sheetURL = url.deletingPathExtension().appendingPathExtension("sheet.png")
-                if capture(sheet, sheetURL) { log("wrote \(sheetURL.path)") }
+            // Sheets and panels are windows of their own.
+            let others = NSApp.windows.filter { $0 !== window && $0.isVisible && $0.frame.height > 100 }
+            for (i, other) in others.enumerated() {
+                let otherURL = url.deletingPathExtension().appendingPathExtension(i == 0 ? "sheet.png" : "sheet\(i + 1).png")
+                if capture(other, otherURL) { log("wrote \(otherURL.path)") }
             }
             return
         }

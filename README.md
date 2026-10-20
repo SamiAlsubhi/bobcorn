@@ -9,6 +9,11 @@ the sources you add: a catalog API or an RSS or Atom torrent feed. You can
 also open any magnet link or `.torrent`. Only add sources and open torrents you
 have the right to download.
 
+Website: https://samialsubhi.github.io/bobcorn. To try Bobcorn, add the
+example source there: a catalog API of public-domain films and TV from the
+Internet Archive, `https://samialsubhi.github.io/bobcorn/api`, built by
+`scripts/make-example-source.py` into `docs/api`.
+
 ## Build and run
 
 Requires macOS 14 or later and Xcode 15 or later (Swift 5.10+).

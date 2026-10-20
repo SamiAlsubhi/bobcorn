@@ -55,7 +55,7 @@ struct ContentView: View {
             MagnetPrompt()
         }
         .sheet(isPresented: $model.addSourceVisible) {
-            SourceEditor(source: CustomSource(kind: .api, name: "", feedURL: "")) { model.addSource($0) }
+            SourceEditor(source: model.addSourceDraft) { model.addSource($0) }
         }
         .alert("Bobcorn", isPresented: Binding(get: { model.alertMessage != nil }, set: { if !$0 { model.alertMessage = nil } })) {
             Button("OK", role: .cancel) {}

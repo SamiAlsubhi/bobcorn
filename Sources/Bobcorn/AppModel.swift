@@ -52,6 +52,8 @@ final class AppModel {
     var torrentFlow: TorrentFlow?
     var magnetPromptVisible = false
     var addSourceVisible = false
+    /// What the Add Source form starts with.
+    var addSourceDraft = CustomSource(kind: .api, name: "", feedURL: "")
     var searchFocusRequest = 0
     var alertMessage: String?
 
