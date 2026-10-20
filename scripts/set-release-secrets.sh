@@ -21,8 +21,14 @@ key_id="${key_id#AuthKey_}"
 
 [ -f "$p12" ] || { echo "No file at $p12"; exit 1; }
 [ -f "$p8" ] || { echo "No file at $p8"; exit 1; }
-read -rsp "Password of $(basename "$p12"): " password
-echo
+# A .p12 made for you comes with its password beside it.
+password_file="${p12%.p12}-password.txt"
+if [ -f "$password_file" ]; then
+    password="$(cat "$password_file")"
+else
+    read -rsp "Password of $(basename "$p12"): " password
+    echo
+fi
 
 # Check the password and the certificate before anything leaves this Mac.
 if ! openssl pkcs12 -in "$p12" -passin "pass:$password" -nokeys 2>/dev/null | grep -q "Developer ID Application" \
@@ -36,4 +42,9 @@ printf '%s' "$password" | gh secret set DEVELOPER_ID_P12_PASSWORD --repo "$repo"
 gh secret set NOTARY_KEY --repo "$repo" < "$p8"
 printf '%s' "$key_id" | gh secret set NOTARY_KEY_ID --repo "$repo"
 printf '%s' "$issuer" | gh secret set NOTARY_ISSUER_ID --repo "$repo"
+if [ -f "$password_file" ]; then
+    # The certificate stays in your keychain; GitHub has its copy.
+    rm -P "$p12" "$password_file"
+    echo "Erased $(basename "$p12") and its password file."
+fi
 echo "Done: the next v* tag is signed and notarized."
