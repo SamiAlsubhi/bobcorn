@@ -14,6 +14,8 @@ struct ContentView: View {
                 ZStack {
                     if model.section == .myList {
                         MyListView()
+                    } else if model.section == .downloads {
+                        DownloadsView()
                     } else if let source = model.currentSource {
                         if source.kind == .api { APIGrid() } else { FeedGrid() }
                     } else {
@@ -128,7 +130,7 @@ struct TopBar: View {
                 }
             }
 
-            if model.section != .myList, model.currentSource != nil {
+            if model.section.browsesSource, model.currentSource != nil {
                 Divider().frame(height: 18).overlay(Color.white.opacity(0.15))
                 Menu {
                     Picker("Source", selection: Binding(get: { model.currentSource?.id }, set: { model.sourceID = $0 })) {

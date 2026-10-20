@@ -66,6 +66,10 @@ struct SessionDirectory {
         url = cache.appendingPathComponent(infoHash.hexString, isDirectory: true)
     }
 
+    init(url: URL) {
+        self.url = url
+    }
+
     func ensureExists() throws {
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
     }
@@ -96,5 +100,59 @@ struct SessionDirectory {
         if let data = try? JSONEncoder().encode(state) {
             try? data.write(to: stateURL, options: .atomic)
         }
+    }
+}
+
+/// A torrent in a cache folder, as it was last saved. A running session
+/// saves what it has every few seconds.
+public struct CachedTorrent: Sendable {
+    public let info: TorrentInfo
+    public let folder: URL
+    /// How much of each content file is here, 0 to 1.
+    public let progress: [Int: Double]
+    /// What its data takes up on disk: only what's downloaded.
+    public let bytesOnDisk: Int64
+
+    public var infoHashHex: String { info.infoHashHex }
+
+    /// Every torrent in `cache` that got as far as its file list.
+    public static func all(in cache: URL) -> [CachedTorrent] {
+        let folders = (try? FileManager.default.contentsOfDirectory(at: cache, includingPropertiesForKeys: nil)) ?? []
+        return folders.compactMap { folder in
+            let dir = SessionDirectory(url: folder)
+            guard let raw = try? Data(contentsOf: dir.infoURL),
+                  let info = try? TorrentInfo(rawInfo: [UInt8](raw)),
+                  info.infoHashHex == folder.lastPathComponent
+            else { return nil }
+            let have = dir.loadHave(pieceCount: info.pieceCount) ?? Bitfield(count: info.pieceCount)
+            let size = (try? dir.dataURL.resourceValues(forKeys: [.totalFileAllocatedSizeKey]).totalFileAllocatedSize) ?? 0
+            return CachedTorrent(info: info, folder: folder, progress: progress(of: info.contentFiles.map(\.index), in: info, have: have),
+                                 bytesOnDisk: Int64(size))
+        }
+    }
+
+    /// Where a torrent keeps its data in `cache`, beside which an app may
+    /// keep files of its own.
+    public static func folder(forInfoHash hex: String, in cache: URL) -> URL {
+        cache.appendingPathComponent(hex.lowercased(), isDirectory: true)
+    }
+
+    static func progress(of fileIndices: [Int], in info: TorrentInfo, have: Bitfield) -> [Int: Double] {
+        var out: [Int: Double] = [:]
+        for f in fileIndices where info.files.indices.contains(f) {
+            let file = info.files[f]
+            guard file.length > 0, let range = info.pieceRange(for: file) else {
+                out[f] = 1
+                continue
+            }
+            var done: Int64 = 0
+            for i in range where i < have.count && have[i] {
+                let start = max(info.pieceOffset(i), file.offset)
+                let end = min(info.pieceOffset(i) + Int64(info.pieceSize(i)), file.offset + file.length)
+                done += max(0, end - start)
+            }
+            out[f] = Double(done) / Double(file.length)
+        }
+        return out
     }
 }

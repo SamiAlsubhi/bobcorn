@@ -161,6 +161,13 @@ final class FileToPlayTests: XCTestCase {
         XCTAssertNotEqual(PlaybackController.fileToPlay(in: pack, season: 1, episode: 12)?.name, "Show.S01E01.1080p.mkv")
     }
 
+    func testPicksTheEpisodesFileThatPlaysHere() throws {
+        // The Internet Archive's packs hold each episode as MP4 and as a bigger Ogg.
+        let pack = try info([("Show s01e19.mp4", 189), ("Show s01e19.ogv", 213), ("Show s01e21.mp4", 160), ("Show s01e21.ogv", 214)])
+        XCTAssertEqual(PlaybackController.fileToPlay(in: pack, season: 1, episode: 19)?.name, "Show s01e19.mp4")
+        XCTAssertEqual(PlaybackController.fileToPlay(in: pack, season: 1, episode: 21)?.name, "Show s01e21.mp4")
+    }
+
     func testPicksAMoviesMainFile() throws {
         let withExtras = try info([("Movie.mkv", 1000), ("Movie.sample.mp4", 50), ("Extras.mp4", 100)])
         XCTAssertEqual(PlaybackController.fileToPlay(in: withExtras, season: nil, episode: nil)?.name, "Movie.mkv")

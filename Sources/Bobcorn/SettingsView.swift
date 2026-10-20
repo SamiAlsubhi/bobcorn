@@ -98,7 +98,7 @@ struct SettingsView: View {
                         refreshSize()
                     }
                 }
-                Text("Watched films stay cached so they resume instantly and help seed the swarm while they play.")
+                Text("Watched films stay cached so they resume instantly and help seed the swarm while they play. Clearing the cache leaves downloads; delete those in the Downloads tab.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

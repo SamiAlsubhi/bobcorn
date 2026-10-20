@@ -140,7 +140,9 @@ struct FeedCard: View {
                         .padding(7)
                     }
                     .overlay(alignment: .bottomTrailing) {
-                        if let seeds = title.bestSeeders {
+                        if let status = model.downloads.status(forTorrents: title.options) {
+                            DownloadBadge(status: status).padding(7)
+                        } else if let seeds = title.bestSeeders {
                             HStack(spacing: 3) {
                                 Image(systemName: "arrow.up").font(.system(size: 9, weight: .heavy))
                                 Text(seeds.formatted(.number.notation(.compactName)))
@@ -252,13 +254,19 @@ struct FeedDetailView: View {
                         }
 
                         if let best = options.first {
-                            Button {
-                                model.playFeed(best, in: title)
-                            } label: {
-                                Label("Watch Now", systemImage: "play.fill")
+                            HStack(spacing: 12) {
+                                Button {
+                                    model.playFeed(best, in: title)
+                                } label: {
+                                    Label("Watch Now", systemImage: "play.fill")
+                                }
+                                .buttonStyle(AccentButtonStyle())
+                                .keyboardShortcut(.defaultAction)
+                                DownloadButton(status: model.downloads.status(forTorrents: title.options),
+                                               ids: model.downloads.ids(forTorrents: title.options)) {
+                                    model.downloadFeed(best, in: title)
+                                }
                             }
-                            .buttonStyle(AccentButtonStyle())
-                            .keyboardShortcut(.defaultAction)
                         }
 
                         VStack(alignment: .leading, spacing: 8) {
@@ -267,7 +275,7 @@ struct FeedDetailView: View {
                                 .foregroundStyle(Theme.secondary)
                             VStack(spacing: 2) {
                                 ForEach(Array(options.enumerated()), id: \.element.id) { i, option in
-                                    OptionRow(option: option, best: i == 0, check: check) {
+                                    OptionRow(option: option, best: i == 0, check: check, download: { model.downloadFeed(option, in: title) }) {
                                         model.playFeed(option, in: title)
                                     }
                                 }
@@ -306,9 +314,11 @@ struct FeedDetailView: View {
 }
 
 struct OptionRow: View {
+    @Environment(AppModel.self) private var model
     let option: FeedOption
     let best: Bool
     let check: SeedCheck
+    var download: (() -> Void)?
     let play: () -> Void
     @State private var hovering = false
 
@@ -347,6 +357,9 @@ struct OptionRow: View {
             }
             .font(.system(size: 12))
             .frame(minWidth: 130, alignment: .trailing)
+            if let download {
+                DownloadControl(status: model.downloads.status(forTorrent: option.entry.infoHash, link: option.entry.link), download: download)
+            }
             Button(action: play) {
                 Image(systemName: "play.fill")
                     .font(.system(size: 11))

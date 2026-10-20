@@ -3,7 +3,7 @@ import Foundation
 /// The top-level tabs: the current source's movies and shows, and the
 /// viewer's own list.
 enum CatalogSection: String, CaseIterable, Identifiable, Codable {
-    case movies, shows, myList
+    case movies, shows, myList, downloads
 
     var id: String { rawValue }
 
@@ -12,8 +12,12 @@ enum CatalogSection: String, CaseIterable, Identifiable, Codable {
         case .movies: return "Movies"
         case .shows: return "TV Shows"
         case .myList: return "My List"
+        case .downloads: return "Downloads"
         }
     }
+
+    /// Shows the source picked in the top bar.
+    var browsesSource: Bool { self == .movies || self == .shows }
 }
 
 struct Genre: Hashable, Identifiable, Codable {

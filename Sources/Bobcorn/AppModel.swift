@@ -63,6 +63,7 @@ final class AppModel {
     let apiBrowse = APIBrowseModel()
     let castDevices = CastDevices()
     let ratings = Ratings()
+    let downloads = Downloads()
     let updater = Updater()
     var updatePromptVisible = false
     private(set) var engine: TorrentEngine
@@ -94,12 +95,14 @@ final class AppModel {
         let config = Self.currentConfig()
         engineConfig = config
         engine = TorrentEngine(configuration: config)
+        downloads.app = self
+        downloads.refresh()
     }
 
     /// Loads the current source's movies or shows. A feed is fetched once for
     /// both tabs unless `force`.
     func reloadBrowse(force: Bool = false) {
-        guard section != .myList, let source = currentSource else { return }
+        guard section.browsesSource, let source = currentSource else { return }
         let search = searchText.trimmingCharacters(in: .whitespaces)
         if let base = source.apiBase {
             apiBrowse.load(source, APIQuery(sourceID: source.id, base: base, type: apiType, genre: apiGenre, sort: apiSort, search: search))
@@ -185,12 +188,78 @@ final class AppModel {
         ))
     }
 
+    // MARK: - Downloads
+
+    /// Downloads a catalog API movie in this torrent, or these episodes of a
+    /// show, each in the torrent picked or else its best seeded one. A season
+    /// pack's episodes download together.
+    func downloadAPI(_ details: APIDetails, episodes: [APIEpisode] = [], option: FeedOption? = nil) {
+        let show = details.title
+        func about(_ parts: [Downloads.Part]) -> Downloads.About {
+            Downloads.About(title: show.title, poster: show.posterURL, saved: show.saved,
+                            series: show.type == .shows ? show.title : nil, parts: parts)
+        }
+        if episodes.isEmpty {
+            guard let link = (option ?? show.options.best())?.entry.link else { return }
+            downloads.download(link: link, about: about([Downloads.Part(key: show.libraryKey, label: show.title)]))
+            return
+        }
+        var byLink: [(link: String, parts: [Downloads.Part])] = []
+        for e in episodes {
+            guard let link = (episodes.count == 1 ? option : nil)?.entry.link ?? e.options.best()?.entry.link else { continue }
+            let part = Downloads.Part(season: e.season, episode: e.episode, key: details.key(e), label: "\(e.tag) · \(e.title)")
+            if let i = byLink.firstIndex(where: { $0.link == link }) { byLink[i].parts.append(part) } else { byLink.append((link, [part])) }
+        }
+        for group in byLink { downloads.download(link: group.link, about: about(group.parts)) }
+    }
+
+    /// Downloads one torrent a feed lists for a title.
+    func downloadFeed(_ option: FeedOption, in title: FeedTitle) {
+        guard let link = option.entry.link else {
+            alertMessage = "This entry has no magnet link or .torrent file."
+            return
+        }
+        // An episode goes with the rest of its show.
+        let series = title.episodeTag == nil ? nil : title.title
+        downloads.download(link: link, about: Downloads.About(title: series ?? title.displayTitle, poster: title.imageURL, series: series,
+                                                               parts: [Downloads.Part(season: option.release.season, episode: option.release.episode,
+                                                                                      label: title.episodeTag ?? title.displayTitle)]))
+    }
+
+    func showDownloads() {
+        selectedAPITitle = nil
+        selectedFeedTitle = nil
+        section = .downloads
+    }
+
+    /// Plays from the cache: the film or episode picked, then the rest of
+    /// what's downloaded of it, a show's next episodes in whichever torrents
+    /// they're in.
+    func playDownload(_ group: Downloads.Group, entry: Downloads.Group.Entry) {
+        let entries = group.entries.filter { $0.part.file != nil }
+        let items = entries.map { e in
+            PlayableItem(key: e.part.key ?? "bt:\(e.item.id):\(e.part.file!)", title: e.part.label,
+                         media: .cached(infoHash: e.item.id, link: e.item.about.link, file: e.part.file!,
+                                        season: e.part.season, episode: e.part.episode),
+                         subtitles: [])
+        }
+        guard !items.isEmpty else { return }
+        startPlayback(PlaybackRequest(
+            title: group.title,
+            artwork: group.about.poster,
+            items: items,
+            startIndex: entries.firstIndex { $0.id == entry.id } ?? 0,
+            saved: group.about.saved,
+            ownedSession: nil
+        ))
+    }
+
     private func scheduleSearch() {
         searchTask?.cancel()
         searchTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 350_000_000)
             guard !Task.isCancelled, let self else { return }
-            if self.section == .myList { self.section = .movies } else { self.reloadBrowse() }
+            if !self.section.browsesSource { self.section = .movies } else { self.reloadBrowse() }
         }
     }
 
@@ -225,8 +294,10 @@ final class AppModel {
             alertMessage = "Stop playback before clearing the cache."
             return
         }
+        downloads.suspend()
         engine.stopAll()
-        try? FileManager.default.removeItem(at: Self.cacheDirectory)
+        Downloads.clearStreamed(in: Self.cacheDirectory)
+        downloads.refresh()
     }
 
     /// Downloads go to `folder` from now on (nil: back to the default), and
@@ -244,7 +315,9 @@ final class AppModel {
         }
         let new = Self.cacheDirectory
         guard old.standardizedFileURL != new.standardizedFileURL else { return true }
+        downloads.suspend()
         engine.stopAll()
+        defer { downloads.refresh() }
         let failure: String? = await Task.detached {
             let fm = FileManager.default
             do {
@@ -300,7 +373,7 @@ final class AppModel {
         library.saveNow()
         engine.stopAll()
         if UserDefaults.standard.bool(forKey: Pref.clearCacheOnQuit) {
-            try? FileManager.default.removeItem(at: Self.cacheDirectory)
+            Downloads.clearStreamed(in: Self.cacheDirectory)
         }
     }
 
@@ -316,6 +389,7 @@ final class AppModel {
     func closePlayback() {
         playback?.stop()
         withAnimation(.easeInOut(duration: 0.25)) { playback = nil }
+        downloads.refresh()
     }
 
     // MARK: - Opening torrents

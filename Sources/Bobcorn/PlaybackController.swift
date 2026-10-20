@@ -13,6 +13,10 @@ struct PlayableItem: Identifiable {
         /// A catalog API's magnet or .torrent URL, opened when it plays. An
         /// episode picks its own file out of a season pack.
         case link(String, season: Int?, episode: Int?)
+        /// A file of a torrent in the cache, opened by its hash: its file
+        /// list is there, so it plays without the network once it's all
+        /// downloaded, and shares the torrent with a download still running.
+        case cached(infoHash: String, link: String?, file: Int, season: Int?, episode: Int?)
     }
 
     /// Also the key its resume position is stored under.
@@ -112,6 +116,8 @@ final class PlaybackController {
     }
 
     var current: PlayableItem { request.items[index] }
+    /// The info hash of the torrent playing.
+    var torrentID: String? { session?.infoHashHex }
     var hasNext: Bool { index + 1 < request.items.count }
     var hasPrevious: Bool { index > 0 }
     var subtitleTracks: [SubtitleTrack] { current.subtitles + torrentSubtitles + downloadedSubtitles + localSubtitles }
@@ -201,6 +207,8 @@ final class PlaybackController {
             session = s
             sessionIsOurs = false
             s.select(fileIndex: file.index)
+            app.downloads.noteStreaming(s.infoHashHex, link: nil, title: request.title, poster: request.artwork, saved: request.saved,
+                                        part: Downloads.Part(file: file.index, key: item.key, label: item.title))
             do {
                 try await stream(file, from: s, app: app)
             } catch {
@@ -224,13 +232,35 @@ final class PlaybackController {
                 session = s
                 sessionIsOurs = true
                 let info = try await s.waitForMetadata()
-                torrentSubtitles = info.contentFiles.filter(\.isSubtitle)
-                    .sorted { $0.displayPath.localizedStandardCompare($1.displayPath) == .orderedAscending }
-                    .map { SubtitleTrack(id: "bt:\($0.index)", label: $0.name, source: .torrent(fileIndex: $0.index)) }
+                torrentSubtitles = Self.subtitleTracks(in: info)
                 guard !Task.isCancelled else { return }
                 guard let file = Self.fileToPlay(in: info, season: season, episode: episode) else {
                     throw TorrentError.noSuchFile
                 }
+                s.select(fileIndex: file.index)
+                app.downloads.noteStreaming(s.infoHashHex, link: link, title: request.title, poster: request.artwork, saved: request.saved,
+                                            part: Downloads.Part(file: file.index, season: season, episode: episode, key: item.key, label: item.title))
+                try await stream(file, from: s, app: app)
+            } catch {
+                guard !Task.isCancelled else { return }
+                phase = .failed(error.localizedDescription)
+            }
+
+        case .cached(let infoHash, let link, let fileIndex, _, _):
+            do {
+                // A magnet's trackers help find what's missing; a .torrent
+                // URL isn't fetched again, since the file list is here.
+                let magnet = link.flatMap { $0.lowercased().hasPrefix("magnet:") ? $0 : nil }
+                guard let source = await Downloads.source(link: magnet, id: infoHash) else { throw TorrentError.invalidMagnet }
+                guard !Task.isCancelled else { return }
+                let s = app.engineForNewTorrent().session(for: source)
+                session = s
+                sessionIsOurs = true
+                let info = try await s.waitForMetadata()
+                torrentSubtitles = Self.subtitleTracks(in: info)
+                guard !Task.isCancelled else { return }
+                guard info.files.indices.contains(fileIndex) else { throw TorrentError.noSuchFile }
+                let file = info.files[fileIndex]
                 s.select(fileIndex: file.index)
                 try await stream(file, from: s, app: app)
             } catch {
@@ -238,6 +268,13 @@ final class PlaybackController {
                 phase = .failed(error.localizedDescription)
             }
         }
+    }
+
+    /// The subtitle files a torrent holds, in name order.
+    nonisolated static func subtitleTracks(in info: TorrentInfo) -> [SubtitleTrack] {
+        info.contentFiles.filter(\.isSubtitle)
+            .sorted { $0.displayPath.localizedStandardCompare($1.displayPath) == .orderedAscending }
+            .map { SubtitleTrack(id: "bt:\($0.index)", label: $0.name, source: .torrent(fileIndex: $0.index)) }
     }
 
     /// Plays a torrent's file as it downloads: as it is when macOS plays the
@@ -288,17 +325,20 @@ final class PlaybackController {
     /// The episode's own file when the torrent names one (a season pack holds
     /// many), otherwise the main video. Samples don't count, and a file that
     /// plays in Bobcorn beats a bigger one that doesn't, unless it's a small
-    /// extra.
+    /// extra: an episode's MP4 over its Ogg twin.
     nonisolated static func fileToPlay(in info: TorrentInfo, season: Int?, episode: Int?) -> TorrentFile? {
         let videos = info.contentFiles.filter(\.isVideo)
         if let season, let episode, videos.count > 1 {
             // "Show.S02E05.mkv", "ShowS02e05.mp4", "Show 2x05.avi".
             let patterns = [#"(?i)(?<!\d)s0*\#(season)[ ._-]?e0*\#(episode)(?!\d)"#, #"(?<!\d)0*\#(season)x0*\#(episode)(?!\d)"#]
             let named = videos.filter { v in patterns.contains { v.name.range(of: $0, options: .regularExpression) != nil } }
-            if let best = named.max(by: { $0.length < $1.length }) { return best }
+            if let best = best(of: named) { return best }
         }
         let features = videos.filter { !$0.name.lowercased().contains("sample") }
-        let pool = features.isEmpty ? videos : features
+        return best(of: features.isEmpty ? videos : features)
+    }
+
+    nonisolated private static func best(of pool: [TorrentFile]) -> TorrentFile? {
         let largest = pool.map(\.length).max() ?? 0
         let native = pool.filter { $0.playsInApp && $0.length * 4 >= largest }
         return (native.isEmpty ? pool : native).max { $0.length < $1.length }
@@ -681,7 +721,7 @@ final class PlaybackController {
             switch (saved.type, current.media) {
             case (.movies, _):
                 q.imdbID = saved.id
-            case (.shows, .link(_, let season?, let episode?)):
+            case (.shows, .link(_, let season?, let episode?)), (.shows, .cached(_, _, _, let season?, let episode?)):
                 q.imdbID = saved.id
                 q.season = season
                 q.episode = episode

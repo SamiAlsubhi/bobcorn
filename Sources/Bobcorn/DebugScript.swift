@@ -15,7 +15,7 @@ import TorrentKit
 /// lanurl:<host>  subtitlesearch  settingsshot:<name>[|sources]  close  quit
 /// Sources: addsource:<name>|<feed>[|<search>]  addapi:<name>|<base url>
 /// clearsources  feeddetail:<index>  feedplay  apisort:<sort>
-/// apidetail:<index>  apiplay[:<episode index>]
+/// apidetail:<index>  apiplay[:<episode index>]  apidownload[:<episode index>|season]  downloads  downloadplay  downloaddelete
 @MainActor
 enum DebugScript {
     static func runIfRequested() {
@@ -94,6 +94,37 @@ enum DebugScript {
             } catch {
                 log("details failed: \(error)")
             }
+        case "apidownload":
+            // The selected movie, or a show's nth episode with torrents, or its first season.
+            guard let t = model.selectedAPITitle, let base = model.apiBrowse.query?.base else { return log("no api title selected") }
+            do {
+                let d = try await APIClient.details(base, t)
+                let playable = d.episodes.filter { !$0.options.isEmpty }
+                if t.type == .movies {
+                    model.downloadAPI(d)
+                } else if arg == "season", let first = playable.first {
+                    model.downloadAPI(d, episodes: playable.filter { $0.season == first.season })
+                } else if let i = Int(arg.isEmpty ? "0" : arg), playable.indices.contains(i) {
+                    model.downloadAPI(d, episodes: [playable[i]])
+                }
+                log("apidownload \(t.title) \(arg)")
+            } catch {
+                log("details failed: \(error)")
+            }
+        case "downloaddelete":
+            for item in model.downloads.items { model.downloads.delete(item.id) }
+        case "downloads":
+            log("sessions running: \(model.engine.activeSessionCount)")
+            for item in model.downloads.items {
+                log("download \(item.about.title) state=\(item.state) \(Int(item.fraction * 100))% kept=\(item.about.kept) rate=\(item.rate.map(formatRate) ?? "-") error=\(item.error ?? "-")")
+            }
+            for group in model.downloads.groups {
+                log("group \(group.title) state=\(group.state) torrents=\(group.items.count) entries=\(group.entries.map(\.part.label).joined(separator: ", "))")
+            }
+        case "downloadplay":
+            // The first film or episode in the Downloads tab.
+            guard let group = model.downloads.groups.first(where: { !$0.entries.isEmpty }), let entry = group.entries.first else { return log("nothing downloaded") }
+            model.playDownload(group, entry: entry)
         case "addsheet":
             // addsheet:<name>|<base url>: the Add Source form, filled in.
             let parts = arg.components(separatedBy: "|")
@@ -137,6 +168,10 @@ enum DebugScript {
                 log("flow info=\(flow.info?.name ?? "nil") peers=\(flow.stats.connectedPeers) error=\(flow.error ?? "-")")
                 for f in flow.videoFiles {
                     log("  \(f.name) \(formatSize(f.length)) \(flow.availability[f.index]?.seedText ?? "?")")
+                }
+            } else if model.section == .downloads {
+                for item in model.downloads.items {
+                    log("download \(item.about.title) state=\(item.state) \(Int(item.fraction * 100))% parts=\(item.parts.count) disk=\(formatSize(item.bytesOnDisk)) rate=\(item.rate.map(formatRate) ?? "-") error=\(item.error ?? "-")")
                 }
             } else if model.section == .myList {
                 log("my list saved=\(model.library.saved.map(\.title)) continue=\(model.library.continueWatching.map(\.progress.title))")

@@ -107,6 +107,8 @@ public final class TorrentSession: @unchecked Sendable {
     private var wantedTotal = 0
     private var wantedRemaining = 0
     private var selectedFiles: Set<Int> = []
+    /// Downloaded in full whatever is played.
+    private var downloadFiles: Set<Int> = []
     private var pinned: Set<Int> = []
     private var progress: [Int: PieceProgress] = [:]
     private var order: [Int] = []
@@ -262,6 +264,25 @@ public final class TorrentSession: @unchecked Sendable {
         queue.async { [self] in
             selectedFiles = []
             applySelection()
+        }
+    }
+
+    /// Files to download in full, whatever the player selects or clears: a
+    /// download's.
+    public func setDownloads(_ fileIndices: Set<Int>) {
+        queue.async { [self] in
+            downloadFiles = fileIndices
+            applySelection()
+        }
+    }
+
+    /// How much of each file is here, 0 to 1.
+    public func fileProgress(_ fileIndices: [Int]) async -> [Int: Double] {
+        await withCheckedContinuation { (c: CheckedContinuation<[Int: Double], Never>) in
+            queue.async { [self] in
+                guard let info else { return c.resume(returning: [:]) }
+                c.resume(returning: CachedTorrent.progress(of: fileIndices, in: info, have: have))
+            }
         }
     }
 
@@ -512,7 +533,7 @@ public final class TorrentSession: @unchecked Sendable {
         guard let info, !stopped else { return }
         wanted = [Bool](repeating: false, count: info.pieceCount)
         pinned.removeAll()
-        for f in selectedFiles where info.files.indices.contains(f) {
+        for f in selectedFiles.union(downloadFiles) where info.files.indices.contains(f) {
             let file = info.files[f]
             guard let range = info.pieceRange(for: file) else { continue }
             for i in range { wanted[i] = true }

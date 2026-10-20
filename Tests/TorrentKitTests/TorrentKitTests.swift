@@ -96,6 +96,31 @@ final class MetainfoTests: XCTestCase {
         XCTAssertEqual(info.pieceRange(for: info.files[2]), 2...2)
     }
 
+    func testReadsTheCacheFolder() throws {
+        let cache = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: cache) }
+        let info = try Metainfo(data: makeTorrent()).info
+        let dir = SessionDirectory(cache: cache, infoHash: info.infoHash)
+        try dir.ensureExists()
+        dir.saveInfo(info)
+        FileManager.default.createFile(atPath: dir.dataURL.path, contents: Data(count: 42))
+        var have = Bitfield(count: info.pieceCount)
+        have[0] = true
+        have[2] = true
+        dir.saveHave(have)
+        // Not torrents: a folder of the app's own, and one whose name isn't its hash.
+        try FileManager.default.createDirectory(at: cache.appendingPathComponent("Subtitles"), withIntermediateDirectories: true)
+        let stray = cache.appendingPathComponent(String(repeating: "0", count: 40))
+        try FileManager.default.createDirectory(at: stray, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: dir.infoURL, to: stray.appendingPathComponent("info.bencode"))
+
+        let found = CachedTorrent.all(in: cache)
+        XCTAssertEqual(found.map(\.infoHashHex), [info.infoHashHex])
+        // Piece 0 holds 16 of a.mp4's 20 bytes; piece 2 all of a.srt.
+        XCTAssertEqual(found.first?.progress, [0: 0.8, 2: 1])
+        XCTAssertEqual(CachedTorrent.folder(forInfoHash: info.infoHashHex.uppercased(), in: cache), dir.url)
+    }
+
     func testRejectsPieceCountMismatch() {
         let info = BValue.dict([
             "name": .string("x"), "piece length": .int(16), "length": .int(40),

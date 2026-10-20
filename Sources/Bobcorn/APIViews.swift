@@ -115,31 +115,6 @@ struct APICard: View {
                             .help(saved ? "Remove from My List" : "Add to My List")
                         }
                     }
-                    .overlay(alignment: .bottomLeading) {
-                        let tomatometer = model.ratings.tomatometer[title.id]
-                        if title.rating != nil || tomatometer != nil {
-                            HStack(spacing: 6) {
-                                if let rating = title.rating {
-                                    HStack(spacing: 3) {
-                                        Image(systemName: "star.fill")
-                                            .font(.system(size: 9, weight: .heavy))
-                                            .foregroundStyle(Theme.gold)
-                                        Text("\(Int(rating.rounded()))%")
-                                    }
-                                    .help("Rated \(Int(rating.rounded()))% by \(title.votes.map { "\($0.formatted()) people" } ?? "the source")")
-                                }
-                                if let tomatometer {
-                                    TomatometerLabel(score: tomatometer, size: 11)
-                                }
-                            }
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 3)
-                            .background(Capsule().fill(.black.opacity(0.65)))
-                            .padding(7)
-                        }
-                    }
                     .overlay(alignment: .topLeading) {
                         HStack(spacing: 4) {
                             if watched {
@@ -160,20 +135,27 @@ struct APICard: View {
                         }
                         .padding(7)
                     }
-                    .overlay(alignment: .bottomTrailing) {
-                        if let seeds {
-                            HStack(spacing: 3) {
-                                Image(systemName: "arrow.up").font(.system(size: 9, weight: .heavy))
-                                Text(seeds.formatted(.number.notation(.compactName)))
+                    .overlay(alignment: .bottom) {
+                        // Side by side when they fit; on a narrow poster the
+                        // seeds or download go up a line rather than cut the rating short.
+                        ViewThatFits(in: .horizontal) {
+                            HStack(alignment: .bottom, spacing: 6) {
+                                ratingBadge
+                                Spacer(minLength: 0)
+                                trailingBadge(seeds)
                             }
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(seeds > 0 ? Color.green : Theme.secondary)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 3)
-                            .background(Capsule().fill(.black.opacity(0.65)))
-                            .padding(7)
-                            .help("\(seeds) seeds")
+                            VStack(spacing: 5) {
+                                HStack {
+                                    Spacer(minLength: 0)
+                                    trailingBadge(seeds)
+                                }
+                                HStack {
+                                    ratingBadge
+                                    Spacer(minLength: 0)
+                                }
+                            }
                         }
+                        .padding(7)
                     }
                     .overlay(alignment: .bottom) {
                         if let progress {
@@ -214,6 +196,54 @@ struct APICard: View {
             if let url = title.imdbURL {
                 Button("Open on IMDb") { NSWorkspace.shared.open(url) }
             }
+        }
+    }
+
+    /// The source's rating and the Tomatometer.
+    @ViewBuilder
+    private var ratingBadge: some View {
+        let tomatometer = model.ratings.tomatometer[title.id]
+        if title.rating != nil || tomatometer != nil {
+            HStack(spacing: 6) {
+                if let rating = title.rating {
+                    HStack(spacing: 3) {
+                        Image(systemName: "star.fill")
+                            .font(.system(size: 9, weight: .heavy))
+                            .foregroundStyle(Theme.gold)
+                        Text("\(Int(rating.rounded()))%")
+                    }
+                    .help("Rated \(Int(rating.rounded()))% by \(title.votes.map { "\($0.formatted()) people" } ?? "the source")")
+                }
+                if let tomatometer {
+                    TomatometerLabel(score: tomatometer, size: 11)
+                }
+            }
+            .fixedSize()
+            .font(.system(size: 11, weight: .bold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(.black.opacity(0.65)))
+        }
+    }
+
+    /// How much is downloaded, or else the seeds.
+    @ViewBuilder
+    private func trailingBadge(_ seeds: Int?) -> some View {
+        if let status = model.downloads.status(forTitle: title.id) {
+            DownloadBadge(status: status).fixedSize()
+        } else if let seeds {
+            HStack(spacing: 3) {
+                Image(systemName: "arrow.up").font(.system(size: 9, weight: .heavy))
+                Text(seeds.formatted(.number.notation(.compactName)))
+            }
+            .fixedSize()
+            .font(.system(size: 11, weight: .bold))
+            .foregroundStyle(seeds > 0 ? Color.green : Theme.secondary)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(.black.opacity(0.65)))
+            .help("\(seeds) seeds")
         }
     }
 
@@ -351,24 +381,27 @@ struct APIDetailView: View {
         }
     }
 
+    /// Each part at its own width, so "73%" never breaks across two lines;
+    /// the source's name gives way instead.
     private var metaRow: some View {
         HStack(spacing: 14) {
-            if let year = shown.year { Text(String(year)) }
+            if let year = shown.year { Text(String(year)).fixedSize() }
             if let minutes = shown.runtime {
-                Text(minutes >= 60 ? "\(minutes / 60)h \(minutes % 60)m" : "\(minutes) min")
+                Text(minutes >= 60 ? "\(minutes / 60)h \(minutes % 60)m" : "\(minutes) min").fixedSize()
             }
             if let n = details?.seasons.count ?? shown.seasonCount, n > 0, title.type == .shows {
-                Text(n == 1 ? "1 season" : "\(n) seasons")
+                Text(n == 1 ? "1 season" : "\(n) seasons").fixedSize()
             }
             if let stars = shown.stars, let rating = shown.rating {
                 HStack(spacing: 6) {
                     RatingStars(rating: stars, size: 12)
                     Text("\(Int(rating.rounded()))%").foregroundStyle(Theme.secondary)
                 }
+                .fixedSize()
                 .help(shown.votes.map { "\($0.formatted()) votes" } ?? "")
             }
             if let tomatometer = model.ratings.tomatometer[title.id] {
-                TomatometerLabel(score: tomatometer, size: 15)
+                TomatometerLabel(score: tomatometer, size: 15).fixedSize()
             }
             if let cert = shown.certification {
                 Text(cert)
@@ -376,9 +409,13 @@ struct APIDetailView: View {
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
                     .overlay(RoundedRectangle(cornerRadius: 3).stroke(Theme.tertiary))
+                    .fixedSize()
             }
             if let source = model.sources.sources.first(where: { $0.apiBase == title.base }) {
-                Text("from \(source.name)").foregroundStyle(Theme.tertiary)
+                Text("from \(source.name)")
+                    .foregroundStyle(Theme.tertiary)
+                    .lineLimit(1)
+                    .layoutPriority(-1)
             }
         }
         .font(.system(size: 14, weight: .medium))
@@ -400,6 +437,11 @@ struct APIDetailView: View {
                     .buttonStyle(AccentButtonStyle())
                     .keyboardShortcut(.defaultAction)
                 }
+                if let best = options.first {
+                    DownloadButton(status: model.downloads.status(forTitle: title.id), ids: model.downloads.ids(forTitle: title.id)) {
+                        download(best)
+                    }
+                }
                 let watched = model.library.isWatched(key)
                 Button {
                     model.library.setWatched(key, !watched)
@@ -412,7 +454,8 @@ struct APIDetailView: View {
             }
 
             if !options.isEmpty {
-                optionList(options, heading: options.count == 1 ? "Torrent" : "Options · most seeds first") { play($0) }
+                optionList(options, heading: options.count == 1 ? "Torrent" : "Options · most seeds first",
+                           download: { download($0) }) { play($0) }
             } else if details == nil && error == nil {
                 ProgressView()
             } else if let error {
@@ -485,14 +528,15 @@ struct APIDetailView: View {
         }
     }
 
-    private func optionList(_ options: [FeedOption], heading: String, play: @escaping (FeedOption) -> Void) -> some View {
+    private func optionList(_ options: [FeedOption], heading: String, download: @escaping (FeedOption) -> Void,
+                            play: @escaping (FeedOption) -> Void) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(heading)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(Theme.secondary)
             VStack(spacing: 2) {
                 ForEach(Array(options.enumerated()), id: \.element.id) { i, option in
-                    OptionRow(option: option, best: i == 0, check: check) { play(option) }
+                    OptionRow(option: option, best: i == 0, check: check, download: { download(option) }) { play(option) }
                 }
             }
             .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.04)))
@@ -506,6 +550,7 @@ struct APIDetailView: View {
         return VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 16) {
                 Text("Episodes").font(.system(size: 20, weight: .bold))
+                seasonDownload(details, current)
                 if details.seasons.count > 1 {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 6) {
@@ -539,6 +584,7 @@ struct APIDetailView: View {
                             }
                             if openEpisodeID == episode.id { check.run(episode.options) }
                         },
+                        download: { download(check.ordered(episode.options).first, episode: episode) },
                         play: { option in play(option, episode: episode) }
                     ) {
                         let options = check.ordered(episode.options)
@@ -554,7 +600,8 @@ struct APIDetailView: View {
                             if options.isEmpty {
                                 Text("No torrents for this episode.").font(.system(size: 12)).foregroundStyle(Theme.tertiary)
                             } else {
-                                optionList(options, heading: options.count == 1 ? "Torrent" : "Options · most seeds first") {
+                                optionList(options, heading: options.count == 1 ? "Torrent" : "Options · most seeds first",
+                                           download: { download($0, episode: episode) }) {
                                     play($0, episode: episode)
                                 }
                             }
@@ -584,6 +631,31 @@ struct APIDetailView: View {
         model.playAPI(details ?? APIDetails(title: shown, episodes: []), episode: episode, option: option)
     }
 
+    private func download(_ option: FeedOption?, episode: APIEpisode? = nil) {
+        model.downloadAPI(details ?? APIDetails(title: shown, episodes: []), episodes: episode.map { [$0] } ?? [], option: option)
+    }
+
+    /// Downloads the season's episodes not downloaded yet, or says how far
+    /// along they are.
+    @ViewBuilder
+    private func seasonDownload(_ details: APIDetails, _ season: Int) -> some View {
+        let episodes = details.episodes(in: season).filter { !$0.options.isEmpty }
+        let statuses = episodes.map { model.downloads.status(forKey: details.key($0)) }
+        let missing = zip(episodes, statuses).filter { $0.1 == nil }.map(\.0)
+        let done = statuses.filter { $0?.state == .complete }.count
+        if !episodes.isEmpty {
+            Button {
+                if missing.isEmpty { model.showDownloads() } else { model.downloadAPI(details, episodes: missing) }
+            } label: {
+                Label(missing.isEmpty ? (done == episodes.count ? "Season \(season) Downloaded" : "Downloading · \(done) of \(episodes.count)")
+                                      : (missing.count == episodes.count ? "Download Season \(season)" : "Download the Rest of Season \(season)"),
+                      systemImage: done == episodes.count ? "checkmark.circle.fill" : "arrow.down.circle")
+            }
+            .buttonStyle(AccentButtonStyle(prominent: false))
+            .help(missing.isEmpty ? "Show in Downloads" : "Download \(missing.count) episode\(missing.count == 1 ? "" : "s")")
+        }
+    }
+
     private func load() async {
         error = nil
         if details == nil { check.run(title.options) }
@@ -610,6 +682,7 @@ private struct APIEpisodeRow<Detail: View>: View {
     let best: FeedOption?
     let open: Bool
     let toggle: () -> Void
+    let download: () -> Void
     let play: (FeedOption) -> Void
     @ViewBuilder let detail: () -> Detail
     @State private var hovering = false
@@ -646,6 +719,9 @@ private struct APIEpisodeRow<Detail: View>: View {
                 }
                 .buttonStyle(.plain)
                 .help(watched ? "Mark as unwatched" : "Mark as watched")
+                if best != nil {
+                    DownloadControl(status: model.downloads.status(forKey: key), download: download)
+                }
                 Button {
                     if let best { play(best) }
                 } label: {

@@ -92,6 +92,15 @@ build signed with the old key first.
   plays its own file.
 - **My List**: titles you heart, and Continue Watching for what you left
   part-way.
+- **Downloads**: a movie's page has a Download button, a show's has one for
+  each episode and one for the season, and so does each torrent option. Two
+  download at a time, the rest wait their turn, and they carry on after a
+  relaunch. Posters, episodes and options show how far along they are. The
+  Downloads tab lists everything in the cache folder: what's downloading,
+  what's all here, and what's partly here from streaming, with Play, Pause,
+  Download the Rest and Delete. Streaming and downloading share one torrent:
+  playing something that's downloading plays what's already here, and
+  downloading something streamed part-way keeps what streaming fetched.
 - **Chromecast**: the player's TV menu lists the Chromecasts and Google TVs
   on the network. Casting hands the device a stream from this Mac, remuxed MKV
   included, and the subtitle picked in the player, which shows on the TV; the
@@ -144,9 +153,10 @@ player asks for it. A file without an index is cut at byte offsets instead.
 
 Downloads go to one sparse file per torrent in `~/Library/Caches/Bobcorn`, so
 watching one film out of a 40 GB torrent uses about that film's size on disk.
-Subtitles downloaded from OpenSubtitles go in a `Subtitles` folder there.
-Settings → Cache shows its size, clears it, and moves it to another folder or
-drive, taking what's downloaded along.
+Subtitles downloaded from OpenSubtitles go in a `Subtitles` folder there, and
+an `about.json` beside each torrent's data says what it is, for the Downloads
+tab. Settings → Cache shows its size, clears it (downloads stay), and moves it
+to another folder or drive, taking what's downloaded along.
 
 `swift run bobcorn-torrent <magnet|.torrent URL|path> [MB]` streams the first
 megabytes of a torrent's largest video through the engine headlessly, which is
