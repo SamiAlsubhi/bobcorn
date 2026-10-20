@@ -155,7 +155,7 @@
   .install-steps { counter-reset: s; list-style: none; padding: 0; margin: 36px 0 0; display: grid; gap: 14px; max-width: 720px; }
   .install-steps li { counter-increment: s; display: flex; gap: 16px; align-items: flex-start; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 20px; }
   .install-steps li::before { content: counter(s); flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: var(--accent); font-weight: 800; font-size: 14px; }
-  .install-steps strong { display: block; }
+  .install-steps li > div > strong { display: block; }
   .install-steps span { color: var(--secondary); font-size: 15px; display: block; }
   .install-steps li > div { min-width: 0; }
   .install-steps .alt { margin-top: 10px; color: var(--tertiary); font-size: 14px; }
