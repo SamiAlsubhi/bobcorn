@@ -30,14 +30,18 @@
 	<true/>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Bobcorn finds Chromecasts on your network and streams video to them.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_googlecast._tcp</string>
+	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
-		<!-- HTTP trackers and web seeds, and the loopback stream server. -->
+		<!-- HTTP trackers, web seeds, posters and the loopback stream server.
+		     Alone: next to NSAllowsArbitraryLoadsForMedia or
+		     NSAllowsLocalNetworking, macOS ignores it. -->
 		<key>NSAllowsArbitraryLoads</key>
-		<true/>
-		<key>NSAllowsArbitraryLoadsForMedia</key>
-		<true/>
-		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
 	<key>CFBundleURLTypes</key>

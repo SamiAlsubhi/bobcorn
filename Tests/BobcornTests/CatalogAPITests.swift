@@ -167,3 +167,61 @@ final class FileToPlayTests: XCTestCase {
         XCTAssertEqual(PlaybackController.fileToPlay(in: twoCuts, season: nil, episode: nil)?.name, "Film.mp4")
     }
 }
+
+@MainActor
+final class LibraryTests: XCTestCase {
+    /// A library written before My List held source titles keeps its watch
+    /// history and resume positions.
+    func testOlderLibraryStillLoads() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("library-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let old = """
+        {"favorites": [{"id": "x", "title": "X", "subjects": [], "section": "movies"}],
+         "watched": ["api:tt1"],
+         "progress": {"bt:abc:0": {"position": 100, "duration": 1000, "updated": 0, "title": "Film",
+                                   "item": {"id": "x", "title": "X", "subjects": [], "section": "movies"}}}}
+        """
+        try Data(old.utf8).write(to: url)
+        let library = Library(fileURL: url)
+        XCTAssertTrue(library.isWatched("api:tt1"))
+        XCTAssertEqual(library.resumePosition("bt:abc:0"), 100)
+        XCTAssertTrue(library.saved.isEmpty)
+        XCTAssertTrue(library.continueWatching.isEmpty)
+
+        let show = SavedTitle(id: "tt2", type: .shows, title: "Show", year: 2020, poster: nil, base: URL(string: "https://api.example")!)
+        library.toggleSaved(show)
+        library.record("api:tt2:s1e1", position: 200, duration: 1000, title: "S01E01", saved: show)
+        library.record("api:tt2:s1e2", position: 300, duration: 1000, title: "S01E02", saved: show)
+        library.saveNow()
+        let reloaded = Library(fileURL: url)
+        XCTAssertEqual(reloaded.saved, [show])
+        XCTAssertEqual(reloaded.continueWatching.map(\.key), ["api:tt2:s1e2"])
+        XCTAssertTrue(reloaded.isWatched("api:tt1"))
+    }
+}
+
+final class RatingsTests: XCTestCase {
+    private func parse(_ json: String) -> Result<Int?, Error> { Ratings.parse(Data(json.utf8)) }
+
+    func testReadsTheTomatometer() throws {
+        let found = parse("""
+        {"Title": "Film", "Ratings": [{"Source": "Internet Movie Database", "Value": "7.5/10"},
+         {"Source": "Rotten Tomatoes", "Value": "91%"}, {"Source": "Metacritic", "Value": "81/100"}], "Response": "True"}
+        """)
+        XCTAssertEqual(try found.get(), 91)
+        XCTAssertTrue(isFresh(91))
+        XCTAssertFalse(isFresh(59))
+    }
+
+    func testNoScoreIsNotAnError() throws {
+        XCTAssertNil(try parse(#"{"Title": "Show", "Ratings": [{"Source": "Internet Movie Database", "Value": "8.1/10"}], "Response": "True"}"#).get())
+        XCTAssertNil(try parse(#"{"Response": "False", "Error": "Movie not found!"}"#).get())
+    }
+
+    func testABadKeyIsReported() {
+        guard case .failure(let error) = parse(#"{"Response": "False", "Error": "Invalid API key!"}"#) else {
+            return XCTFail("expected a failure")
+        }
+        XCTAssertTrue(error.localizedDescription.contains("Invalid API key"))
+    }
+}

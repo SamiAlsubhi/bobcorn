@@ -12,21 +12,15 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 TopBar()
                 ZStack {
-                    switch model.section {
-                    case .myList: MyListView()
-                    case .sources:
-                        if model.currentSource?.kind == .api { APIGrid() } else { FeedGrid() }
-                    default: BrowseGrid()
+                    if model.section == .myList {
+                        MyListView()
+                    } else if let source = model.currentSource {
+                        if source.kind == .api { APIGrid() } else { FeedGrid() }
+                    } else {
+                        WelcomeView()
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-
-            if let item = model.selectedItem {
-                DetailView(item: item)
-                    .id(item.id)
-                    .transition(.asymmetric(insertion: .opacity.combined(with: .scale(scale: 0.98)), removal: .opacity))
-                    .zIndex(1)
             }
 
             if let title = model.selectedFeedTitle {
@@ -52,7 +46,6 @@ struct ContentView: View {
         .ignoresSafeArea()
         .preferredColorScheme(.dark)
         .frame(minWidth: 920, minHeight: 600)
-        .animation(.easeInOut(duration: 0.22), value: model.selectedItem?.id)
         .animation(.easeInOut(duration: 0.22), value: model.selectedFeedTitle?.id)
         .animation(.easeInOut(duration: 0.22), value: model.selectedAPITitle?.id)
         .sheet(item: $model.torrentFlow, onDismiss: nil) { flow in
@@ -60,6 +53,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $model.magnetPromptVisible) {
             MagnetPrompt()
+        }
+        .sheet(isPresented: $model.addSourceVisible) {
+            SourceEditor(source: CustomSource(kind: .api, name: "", feedURL: "")) { model.addSource($0) }
         }
         .alert("Bobcorn", isPresented: Binding(get: { model.alertMessage != nil }, set: { if !$0 { model.alertMessage = nil } })) {
             Button("OK", role: .cancel) {}
@@ -69,7 +65,7 @@ struct ContentView: View {
         .onDrop(of: [.fileURL, .url, .plainText], isTargeted: nil) { providers in
             handleDrop(providers)
         }
-        .onAppear { if model.browse.items.isEmpty { model.reloadBrowse() } }
+        .onAppear { model.reloadBrowse() }
     }
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
@@ -111,9 +107,8 @@ struct TopBar: View {
             .padding(.trailing, 6)
 
             HStack(spacing: 4) {
-                ForEach(model.visibleSections) { section in
+                ForEach(CatalogSection.allCases) { section in
                     SectionTab(section: section, selected: model.section == section) {
-                        model.selectedItem = nil
                         model.selectedFeedTitle = nil
                         model.selectedAPITitle = nil
                         model.section = section
@@ -121,7 +116,7 @@ struct TopBar: View {
                 }
             }
 
-            if model.section == .sources {
+            if model.section != .myList, model.currentSource != nil {
                 Divider().frame(height: 18).overlay(Color.white.opacity(0.15))
                 Menu {
                     Picker("Source", selection: Binding(get: { model.currentSource?.id }, set: { model.sourceID = $0 })) {
@@ -138,7 +133,33 @@ struct TopBar: View {
                 .menuIndicator(.hidden)
                 .fixedSize()
 
-                if model.currentSource?.kind != .api {
+                if model.currentSource?.kind == .api {
+                    Menu {
+                        Picker("Genre", selection: $model.apiGenre) {
+                            ForEach(APIQuery.genres) { g in Text(g.name).tag(g) }
+                        }
+                        .pickerStyle(.inline)
+                    } label: {
+                        FilterLabel(title: "Genre", value: model.apiGenre.name)
+                    }
+                    .menuStyle(.button)
+                    .buttonStyle(.plain)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+
+                    Menu {
+                        Picker("Sort by", selection: $model.apiSort) {
+                            ForEach(APISort.allCases) { s in Text(s.title).tag(s) }
+                        }
+                        .pickerStyle(.inline)
+                    } label: {
+                        FilterLabel(title: "Sort by", value: model.apiSort.title)
+                    }
+                    .menuStyle(.button)
+                    .buttonStyle(.plain)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                } else {
                     Menu {
                         Picker("Sort by", selection: $model.feedSort) {
                             ForEach(FeedSort.allCases) { s in Text(s.title).tag(s) }
@@ -152,33 +173,6 @@ struct TopBar: View {
                     .menuIndicator(.hidden)
                     .fixedSize()
                 }
-            } else if model.section != .myList {
-                Divider().frame(height: 18).overlay(Color.white.opacity(0.15))
-                Menu {
-                    Picker("Genre", selection: $model.genre) {
-                        ForEach(model.section.genres) { g in Text(g.name).tag(g) }
-                    }
-                    .pickerStyle(.inline)
-                } label: {
-                    FilterLabel(title: "Genre", value: model.genre.name)
-                }
-                .menuStyle(.button)
-                .buttonStyle(.plain)
-                .menuIndicator(.hidden)
-                .fixedSize()
-
-                Menu {
-                    Picker("Sort by", selection: $model.sort) {
-                        ForEach(SortOption.allCases) { s in Text(s.title).tag(s) }
-                    }
-                    .pickerStyle(.inline)
-                } label: {
-                    FilterLabel(title: "Sort by", value: model.sort.title)
-                }
-                .menuStyle(.button)
-                .buttonStyle(.plain)
-                .menuIndicator(.hidden)
-                .fixedSize()
             }
 
             Spacer(minLength: 12)
@@ -186,7 +180,7 @@ struct TopBar: View {
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(Theme.tertiary)
-                TextField(model.section == .sources && model.currentSource?.canSearch != true ? "Filter" : "Search", text: $model.searchText)
+                TextField(model.currentSource?.canSearch == false ? "Filter" : "Search", text: $model.searchText)
                     .textFieldStyle(.plain)
                     .focused($searchFocused)
                     .frame(width: 170)
@@ -268,164 +262,46 @@ struct FilterLabel: View {
     }
 }
 
-// MARK: - Browse grid
+// MARK: - Welcome
 
-struct BrowseGrid: View {
+/// Before there's a source to browse: asks for one.
+struct WelcomeView: View {
     @Environment(AppModel.self) private var model
 
-    private let columns = [GridItem(.adaptive(minimum: 154, maximum: 210), spacing: 22, alignment: .top)]
-
     var body: some View {
-        let browse = model.browse
-        ScrollView {
-            if !model.searchText.isEmpty || browse.total > 0 {
-                HStack {
-                    Text(model.searchText.isEmpty ? "\(model.genre.name == "All" ? model.section.title : model.genre.name)" : "Results for “\(model.searchText)”")
-                        .font(.system(size: 20, weight: .bold))
-                    if browse.total > 0 {
-                        Text("\(browse.total.formatted()) titles")
-                            .foregroundStyle(Theme.tertiary)
-                            .padding(.leading, 4)
-                    }
-                    Spacer()
+        VStack(spacing: 16) {
+            Image(systemName: "popcorn.fill")
+                .font(.system(size: 52))
+                .foregroundStyle(Theme.accent)
+            if model.sources.sources.isEmpty {
+                Text("Welcome to Bobcorn").font(.system(size: 26, weight: .heavy))
+                Text("Add a source to browse its movies and TV shows. Bobcorn streams them over BitTorrent while they download.")
+                    .foregroundStyle(Theme.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 420)
+                Button {
+                    model.addSourceVisible = true
+                } label: {
+                    Label("Add a Source", systemImage: "plus")
                 }
-                .padding(.horizontal, 28)
-                .padding(.top, 22)
+                .buttonStyle(AccentButtonStyle())
+                .keyboardShortcut(.defaultAction)
+                .padding(.top, 4)
+                Text("A source is a catalog API or an RSS or Atom torrent feed. Only add sources you have the right to download from.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.tertiary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 420)
+            } else {
+                Text("Your sources are turned off").font(.system(size: 22, weight: .bold))
+                Text("Turn one on to browse its movies and TV shows.")
+                    .foregroundStyle(Theme.secondary)
+                SettingsLink { Text("Manage Sources") }
+                    .buttonStyle(AccentButtonStyle())
             }
-
-            LazyVGrid(columns: columns, spacing: 26) {
-                ForEach(browse.items) { item in
-                    PosterCard(item: item)
-                        .onAppear {
-                            if let i = browse.items.firstIndex(of: item), i >= browse.items.count - 18 { browse.loadMore() }
-                        }
-                }
-            }
-            .padding(.horizontal, 28)
-            .padding(.top, 14)
-
-            Group {
-                if browse.isLoading {
-                    ProgressView().controlSize(.regular).padding(30)
-                } else if let error = browse.error {
-                    VStack(spacing: 10) {
-                        Text("Couldn't reach the Internet Archive").font(.headline)
-                        Text(error).foregroundStyle(Theme.secondary).font(.callout)
-                        Button("Try Again") { browse.retry() }.buttonStyle(AccentButtonStyle())
-                    }
-                    .padding(40)
-                } else if browse.items.isEmpty {
-                    VStack(spacing: 8) {
-                        Image(systemName: "film.stack").font(.system(size: 34)).foregroundStyle(Theme.tertiary)
-                        Text("Nothing found").font(.headline)
-                        Text("Try another genre or search.").foregroundStyle(Theme.secondary)
-                    }
-                    .padding(60)
-                }
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.bottom, 30)
         }
-        .scrollIndicators(.automatic)
-    }
-}
-
-struct PosterCard: View {
-    @Environment(AppModel.self) private var model
-    let item: CatalogItem
-    var progress: Double? = nil
-    @State private var hovering = false
-
-    var body: some View {
-        let favorite = model.library.isFavorite(item.id)
-        let watched = model.library.isWatched(item.id)
-        Button {
-            model.selectedItem = item
-        } label: {
-            VStack(alignment: .leading, spacing: 7) {
-                Color.clear
-                    .aspectRatio(2 / 3, contentMode: .fit)
-                    .overlay { RemoteImage(url: item.posterURL) }
-                    .overlay {
-                        ZStack {
-                            LinearGradient(colors: [.black.opacity(0.1), .black.opacity(0.8)], startPoint: .top, endPoint: .bottom)
-                            VStack(spacing: 10) {
-                                Image(systemName: "play.circle.fill")
-                                    .font(.system(size: 44))
-                                    .foregroundStyle(.white, Theme.accent)
-                                if let rating = item.rating {
-                                    VStack(spacing: 3) {
-                                        RatingStars(rating: rating)
-                                        Text(String(format: "%.1f / 5", rating))
-                                            .font(.system(size: 11, weight: .semibold))
-                                    }
-                                }
-                            }
-                        }
-                        .opacity(hovering ? 1 : 0)
-                    }
-                    .overlay(alignment: .topTrailing) {
-                        if favorite || hovering {
-                            Button {
-                                model.library.toggleFavorite(item)
-                            } label: {
-                                Image(systemName: favorite ? "heart.fill" : "heart")
-                                    .font(.system(size: 13, weight: .bold))
-                                    .foregroundStyle(favorite ? Theme.accent : .white)
-                                    .padding(7)
-                                    .background(Circle().fill(.black.opacity(0.55)))
-                            }
-                            .buttonStyle(.plain)
-                            .padding(7)
-                            .help(favorite ? "Remove from My List" : "Add to My List")
-                        }
-                    }
-                    .overlay(alignment: .topLeading) {
-                        if watched {
-                            Image(systemName: "eye.fill")
-                                .font(.system(size: 10, weight: .bold))
-                                .padding(6)
-                                .background(Capsule().fill(.black.opacity(0.6)))
-                                .padding(7)
-                                .help("Watched")
-                        }
-                    }
-                    .overlay(alignment: .bottom) {
-                        if let progress {
-                            GeometryReader { geo in
-                                ZStack(alignment: .leading) {
-                                    Rectangle().fill(.white.opacity(0.25))
-                                    Rectangle().fill(Theme.accent).frame(width: geo.size.width * progress)
-                                }
-                            }
-                            .frame(height: 4)
-                        }
-                    }
-                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    .shadow(color: .black.opacity(hovering ? 0.6 : 0.35), radius: hovering ? 14 : 6, y: hovering ? 8 : 3)
-                    .scaleEffect(hovering ? 1.035 : 1)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(item.title)
-                        .font(.system(size: 13, weight: .semibold))
-                        .lineLimit(2)
-                        .foregroundStyle(.white)
-                    Text(item.year.map(String.init) ?? " ")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Theme.tertiary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover { h in withAnimation(.easeOut(duration: 0.15)) { hovering = h } }
-        .contextMenu {
-            Button(favorite ? "Remove from My List" : "Add to My List") { model.library.toggleFavorite(item) }
-            Button(watched ? "Mark as Unwatched" : "Mark as Watched") { model.library.setWatched(item.id, !watched) }
-            Divider()
-            Button("Open on archive.org") { NSWorkspace.shared.open(item.pageURL) }
-        }
+        .padding(40)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -437,7 +313,7 @@ struct MyListView: View {
 
     var body: some View {
         let continuing = model.library.continueWatching
-        let favorites = model.library.favorites
+        let saved = model.library.saved
         ScrollView {
             VStack(alignment: .leading, spacing: 30) {
                 if !continuing.isEmpty {
@@ -445,24 +321,24 @@ struct MyListView: View {
                         Text("Continue Watching").font(.system(size: 20, weight: .bold))
                         LazyVGrid(columns: columns, spacing: 26) {
                             ForEach(continuing, id: \.key) { entry in
-                                if let item = entry.progress.item {
-                                    PosterCard(item: item, progress: entry.progress.fraction)
+                                if let title = entry.progress.saved {
+                                    APICard(title: APITitle(saved: title), progress: entry.progress.fraction)
                                 }
                             }
                         }
                     }
                 }
                 VStack(alignment: .leading, spacing: 14) {
-                    Text("Favorites").font(.system(size: 20, weight: .bold))
-                    if favorites.isEmpty {
+                    Text("Saved").font(.system(size: 20, weight: .bold))
+                    if saved.isEmpty {
                         HStack(spacing: 10) {
                             Image(systemName: "heart").foregroundStyle(Theme.tertiary)
-                            Text("Titles you heart show up here.").foregroundStyle(Theme.secondary)
+                            Text("Movies and shows you heart show up here.").foregroundStyle(Theme.secondary)
                         }
                         .padding(.vertical, 20)
                     } else {
                         LazyVGrid(columns: columns, spacing: 26) {
-                            ForEach(favorites) { PosterCard(item: $0) }
+                            ForEach(saved) { APICard(title: APITitle(saved: $0)) }
                         }
                     }
                 }

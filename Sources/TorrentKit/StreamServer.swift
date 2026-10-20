@@ -20,6 +20,11 @@ public final class StreamServer: @unchecked Sendable {
     private var routes: [String: Route] = [:]
     private var connections: [ObjectIdentifier: StreamConnection] = [:]
     private var startedPort: UInt16 = 0
+    private var lanListener: NWListener?
+    private var lanPort: UInt16 = 0
+    /// What a request from another device must start its path with: the
+    /// local network only gets the streams it was handed.
+    let secret = (0..<16).map { _ in String(format: "%02x", UInt8.random(in: 0...255)) }.joined()
 
     public init() {}
 
@@ -66,7 +71,59 @@ public final class StreamServer: @unchecked Sendable {
         listener?.cancel()
         listener = nil
         startedPort = 0
+        lanListener?.cancel()
+        lanListener = nil
+        lanPort = 0
         lock.unlock()
+    }
+
+    /// Also serves the local network, for a Chromecast to stream from.
+    @discardableResult
+    public func startLAN() async throws -> UInt16 {
+        if currentLANPort != 0 { return currentLANPort }
+        let listener = try NWListener(using: .tcp)
+        listener.newConnectionHandler = { [weak self] conn in self?.accept(conn, lan: true) }
+        let port: UInt16 = try await withCheckedThrowingContinuation { c in
+            let once = OnceGuard()
+            listener.stateUpdateHandler = { state in
+                switch state {
+                case .ready:
+                    if once.claim() { c.resume(returning: listener.port?.rawValue ?? 0) }
+                case .failed(let error):
+                    if once.claim() { c.resume(throwing: error) }
+                default:
+                    break
+                }
+            }
+            listener.start(queue: queue)
+        }
+        adoptLAN(listener, port: port)
+        return port
+    }
+
+    private var currentLANPort: UInt16 {
+        lock.lock()
+        defer { lock.unlock() }
+        return lanPort
+    }
+
+    private func adoptLAN(_ listener: NWListener, port: UInt16) {
+        lock.lock()
+        lanListener = listener
+        lanPort = port
+        lock.unlock()
+    }
+
+    /// `url`, a stream on this Mac, as another device on the network reaches
+    /// it at `host`. Nil until `startLAN`.
+    public func lanURL(for url: URL, host: String) -> URL? {
+        let port = currentLANPort
+        guard port != 0, var c = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+        c.host = nil
+        c.port = nil
+        c.scheme = nil
+        guard let rest = c.string else { return nil }
+        return URL(string: "http://\(host):\(port)/\(secret)\(rest)")
     }
 
     /// A URL that serves `file` from `session`.
@@ -108,8 +165,8 @@ public final class StreamServer: @unchecked Sendable {
         return routes[String(token)]
     }
 
-    private func accept(_ conn: NWConnection) {
-        let c = StreamConnection(connection: conn, server: self)
+    private func accept(_ conn: NWConnection, lan: Bool = false) {
+        let c = StreamConnection(connection: conn, server: self, lan: lan)
         lock.lock()
         connections[ObjectIdentifier(c)] = c
         lock.unlock()
@@ -147,10 +204,14 @@ final class StreamConnection: @unchecked Sendable {
     private var buffer = Data()
     private var task: Task<Void, Never>?
     private let once = OnceGuard()
+    /// From another device: it must know the secret, and gets CORS headers
+    /// (a Cast receiver fetches HLS from a web page).
+    private let lan: Bool
 
-    init(connection: NWConnection, server: StreamServer) {
+    init(connection: NWConnection, server: StreamServer, lan: Bool) {
         self.connection = connection
         self.server = server
+        self.lan = lan
     }
 
     func start(queue: DispatchQueue) {
@@ -203,7 +264,18 @@ final class StreamConnection: @unchecked Sendable {
         let requestLine = lines.first?.split(separator: " ") ?? []
         guard requestLine.count >= 2 else { return respond(status: "400 Bad Request") }
         let method = String(requestLine[0])
-        let path = String(requestLine[1])
+        var path = String(requestLine[1])
+        if lan {
+            guard let secret = server?.secret, path.hasPrefix("/\(secret)/") else { return respond(status: "403 Forbidden") }
+            path = String(path.dropFirst(secret.count + 1))
+            if method == "OPTIONS" {
+                return respond(status: "204 No Content", extra: [
+                    "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+                    "Access-Control-Allow-Headers": "Range, Content-Type",
+                    "Access-Control-Max-Age": "600",
+                ])
+            }
+        }
         var headers: [String: String] = [:]
         for line in lines.dropFirst() {
             guard let colon = line.firstIndex(of: ":") else { continue }
@@ -322,6 +394,11 @@ final class StreamConnection: @unchecked Sendable {
     }
 
     private func sendHead(status: String, headers: [String: String]) {
+        var headers = headers
+        if lan {
+            headers["Access-Control-Allow-Origin"] = "*"
+            headers["Access-Control-Expose-Headers"] = "Content-Length, Content-Range, Accept-Ranges"
+        }
         var s = "HTTP/1.1 \(status)\r\n"
         for (k, v) in headers { s += "\(k): \(v)\r\n" }
         s += "\r\n"

@@ -1,15 +1,13 @@
 # Bobcorn
 
-A Popcorn Time–style movie player for macOS, written in Swift. Browse a
-poster grid, open a title, press play: the film streams over BitTorrent while
-it downloads.
+A Popcorn Time–style movie player for macOS, written in Swift. Add a source,
+browse its poster grid, open a title, press play: the film streams over
+BitTorrent while it downloads.
 
-The catalog is the Internet Archive's public-domain and openly licensed film,
-TV and animation collections (`feature_films`, `classic_tv`,
-`animationandcartoons`). Every archive.org title has a real `.torrent` with
-the Archive's servers as web seeds, so titles stream from the swarm and the
-Archive at once. You can also open any magnet link or `.torrent` you have the
-right to download.
+Bobcorn ships with no catalog of its own. Its Movies and TV Shows tabs show
+the sources you add: a catalog API or an RSS or Atom torrent feed. You can
+also open any magnet link or `.torrent`. Only add sources and open torrents you
+have the right to download.
 
 ## Build and run
 
@@ -39,26 +37,30 @@ allow it in System Settings → Privacy & Security.
 
 ## Features
 
-- **Browse** Movies, TV Shows, Animation, and My List. Filter by genre, sort by
-  popularity, trending, rating, year, date added or title, and search. The grid
-  scrolls without end.
-- **Details**: synopsis, rating, director, a quality picker, an episode list
-  for series, and watched/favorite marks.
-- **Seed counts**: while a detail page is open, Bobcorn joins the title's
-  swarm without downloading and counts the peers holding each file. Quality
-  options show their seeds and are sorted by them. Pressing play reuses that
-  already-connected swarm.
+- **Sources**: on first launch Bobcorn asks for one; more go in Settings →
+  Sources, and the one picked in the top bar fills the tabs. A catalog API is
+  a JSON service with `/movies/<page>`, `/shows/<page>`, `/movie/<imdb_id>` and
+  `/show/<imdb_id>` endpoints; genre, sort and search are passed to it, and the
+  grid scrolls without end. A feed lists torrents as magnet links or
+  `.torrent` files: its films go under Movies and its episodes under TV Shows.
+- **Posters** show their rating as a star and a score out of five, their
+  Rotten Tomatoes Tomatometer (a tomato when fresh, a splat when rotten),
+  their qualities and their best seed count. Tomatometer scores come from
+  OMDb, with a free key set in Settings → Sources, and are kept on disk.
+- **Details**: synopsis, rating, runtime, genres, and every torrent with its
+  quality, size and seeds, most seeds first. Shows have season and episode
+  lists, and episodes play as one playlist; an episode inside a season pack
+  plays its own file.
+- **My List**: titles you heart, and Continue Watching for what you left
+  part-way.
+- **Chromecast**: the player's TV menu lists the Chromecasts and Google TVs
+  on the network. Casting hands the device a stream from this Mac, remuxed MKV
+  included; the next episode follows, resume positions are kept, and stopping
+  carries on here where the TV left off. Other devices only reach the streams
+  Bobcorn hands out: each address carries a random secret.
 - **Player**: AVKit with picture-in-picture and full screen. It resumes where
   you stopped, auto-plays the next episode, and shows `.srt`/`.vtt` subtitles
-  from the title, the torrent or a local file.
-- **Sources**: Settings → Sources adds your own RSS or Atom torrent feeds, or
-  a catalog API, a JSON service with `/movies/<page>`, `/shows/<page>`,
-  `/movie/<imdb_id>` and `/show/<imdb_id>` endpoints. An API source gets its
-  own endless poster grid of movies and shows, with genre, sort and search
-  passed to the API, and detail pages listing each torrent's quality, size and
-  seeds. Shows have season and episode lists; episodes play as one playlist,
-  and an episode inside a season pack plays its own file. Only add sources
-  you have the right to download from.
+  from the torrent or a local file.
 - **Any torrent** (⇧⌘O, ⌘O, drag and drop): shows each video's seeds and
   peers, best-seeded first.
 - **MKV** plays in Bobcorn's own player. It's repackaged on the fly, while it
@@ -66,8 +68,6 @@ allow it in System Settings → Privacy & Security.
   (on Macs that decode it) with AAC, AC-3, E-AC-3, MP3 or Opus. Nothing is
   re-encoded. AVI, and MKVs with DTS or TrueHD audio or VP9 video, open in
   IINA or VLC through the same local stream, and Bobcorn says why.
-- **Resilient**: if a torrent stalls or an archive.org data node is down,
-  playback falls back to direct HTTPS from a node that works.
 
 ## How it works
 
@@ -84,6 +84,9 @@ dependencies:
 | `WebSeed.swift` | HTTP web seeds (BEP 19) |
 | `StreamServer.swift` | a loopback HTTP server with Range support that AVPlayer reads from; a read of missing bytes waits for them and moves the download window there |
 
+`Sources/CastKit` speaks the Cast protocol from scratch: Bonjour discovery,
+the protocol-buffer framing over TLS, and Google's Default Media Receiver.
+
 `Sources/Remux` turns Matroska into HLS without re-encoding, also with no
 dependencies: `Matroska.swift` reads the tracks, the keyframe index and the
 blocks (with lacing and header stripping), `Codecs.swift` describes each codec
@@ -93,7 +96,8 @@ player asks for it. A file without an index is cut at byte offsets instead.
 
 Downloads go to one sparse file per torrent in `~/Library/Caches/Bobcorn`, so
 watching one film out of a 40 GB torrent uses about that film's size on disk.
-Settings → Cache shows its size and clears it.
+Settings → Cache shows its size, clears it, and moves it to another folder or
+drive, taking what's downloaded along.
 
 `swift run bobcorn-torrent <magnet|.torrent URL|path> [MB]` streams the first
 megabytes of a torrent's largest video through the engine headlessly, which is

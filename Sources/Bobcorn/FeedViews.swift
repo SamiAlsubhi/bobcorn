@@ -1,25 +1,27 @@
 import SwiftUI
 import TorrentKit
 
-/// The Sources tab: titles from the selected custom feed.
+/// A feed source's movies, or its episodes under TV Shows.
 struct FeedGrid: View {
     @Environment(AppModel.self) private var model
     private let columns = [GridItem(.adaptive(minimum: 154, maximum: 210), spacing: 22, alignment: .top)]
 
     var body: some View {
         let feed = model.feedBrowse
+        let shows = model.section == .shows
+        let titles = feed.titles.filter { ($0.episodeTag != nil) == shows }
         ScrollView {
             HStack(alignment: .firstTextBaseline) {
-                Text(model.searchText.isEmpty ? (feed.source?.name ?? "Sources") : "Results for “\(model.searchText)”")
+                Text(model.searchText.isEmpty ? model.section.title : "Results for “\(model.searchText)”")
                     .font(.system(size: 20, weight: .bold))
-                if !feed.titles.isEmpty {
-                    Text("\(feed.titles.count) titles · \(feed.entryCount) torrents")
+                if !titles.isEmpty {
+                    Text("\(titles.count) titles · \(titles.reduce(0) { $0 + $1.options.count }) torrents")
                         .foregroundStyle(Theme.tertiary)
                         .padding(.leading, 4)
                 }
                 Spacer()
                 Button {
-                    model.reloadBrowse()
+                    model.reloadBrowse(force: true)
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
@@ -31,7 +33,7 @@ struct FeedGrid: View {
             .padding(.top, 22)
 
             LazyVGrid(columns: columns, spacing: 26) {
-                ForEach(feed.titles) { title in
+                ForEach(titles) { title in
                     FeedCard(title: title)
                 }
             }
@@ -46,15 +48,15 @@ struct FeedGrid: View {
                         Text("Couldn't load \(feed.source?.name ?? "this source")").font(.headline)
                         Text(error).foregroundStyle(Theme.secondary).font(.callout).multilineTextAlignment(.center)
                         HStack {
-                            Button("Try Again") { model.reloadBrowse() }.buttonStyle(AccentButtonStyle())
+                            Button("Try Again") { model.reloadBrowse(force: true) }.buttonStyle(AccentButtonStyle())
                             SettingsLink { Text("Edit Sources") }.buttonStyle(AccentButtonStyle(prominent: false))
                         }
                     }
                     .padding(40)
-                } else if feed.titles.isEmpty {
+                } else if titles.isEmpty {
                     VStack(spacing: 8) {
-                        Image(systemName: "dot.radiowaves.up.forward").font(.system(size: 34)).foregroundStyle(Theme.tertiary)
-                        Text(model.searchText.isEmpty ? "This feed lists no torrents" : "Nothing matches").font(.headline)
+                        Image(systemName: shows ? "tv" : "film.stack").font(.system(size: 34)).foregroundStyle(Theme.tertiary)
+                        Text(!model.searchText.isEmpty ? "Nothing matches" : shows ? "This feed lists no episodes" : "This feed lists no movies").font(.headline)
                     }
                     .padding(60)
                 }
@@ -233,7 +235,7 @@ struct FeedDetailView: View {
                         .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(.white.opacity(0.85))
 
-                        if let summary = title.summary.map(ArchiveClient.cleanHTML), !summary.isEmpty {
+                        if let summary = title.summary.map(HTML.clean), !summary.isEmpty {
                             Text(summary)
                                 .font(.system(size: 14))
                                 .lineSpacing(3)

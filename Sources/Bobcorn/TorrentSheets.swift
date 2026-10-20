@@ -189,3 +189,18 @@ private struct SeedLabel: View {
         .foregroundStyle(.secondary)
     }
 }
+extension FileAvailability {
+    /// "12 seeds", "3 seeds + web seed", "web seed", "no seeds".
+    var seedText: String {
+        let s = seeds == 1 ? "1 seed" : "\(seeds) seeds"
+        switch (seeds > 0, webSeeded) {
+        case (true, true): return "\(s) + web seed"
+        case (true, false): return s
+        case (false, true): return "web seed"
+        case (false, false): return "no seeds"
+        }
+    }
+
+    /// Orders options best-first.
+    var rank: (Int, Int, Int) { (seeds, webSeeded ? 1 : 0, peers) }
+}

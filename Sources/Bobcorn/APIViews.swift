@@ -7,47 +7,16 @@ struct APIGrid: View {
     private let columns = [GridItem(.adaptive(minimum: 154, maximum: 210), spacing: 22, alignment: .top)]
 
     var body: some View {
-        @Bindable var model = model
         let browse = model.apiBrowse
         ScrollView {
-            HStack(alignment: .center, spacing: 18) {
+            HStack(alignment: .firstTextBaseline) {
                 Text(heading)
                     .font(.system(size: 20, weight: .bold))
                     .lineLimit(1)
                     .layoutPriority(1)
                 Spacer()
-                Menu {
-                    Picker("Genre", selection: $model.apiGenre) {
-                        ForEach(APIQuery.genres) { g in Text(g.name).tag(g) }
-                    }
-                    .pickerStyle(.inline)
-                } label: {
-                    FilterLabel(title: "Genre", value: model.apiGenre.name)
-                }
-                .menuStyle(.button)
-                .buttonStyle(.plain)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                Menu {
-                    Picker("Sort by", selection: $model.apiSort) {
-                        ForEach(APISort.allCases) { s in Text(s.title).tag(s) }
-                    }
-                    .pickerStyle(.inline)
-                } label: {
-                    FilterLabel(title: "Sort by", value: model.apiSort.title)
-                }
-                .menuStyle(.button)
-                .buttonStyle(.plain)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                Picker("Show", selection: $model.apiType) {
-                    ForEach(APIMediaType.allCases) { t in Text(t.title).tag(t) }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .fixedSize()
                 Button {
-                    model.reloadBrowse()
+                    model.reloadBrowse(force: true)
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
@@ -99,18 +68,20 @@ struct APIGrid: View {
 
     private var heading: String {
         if !model.searchText.isEmpty { return "Results for “\(model.searchText)”" }
-        if model.apiGenre != .all { return model.apiGenre.name }
-        return model.apiBrowse.source?.name ?? "Sources"
+        if model.apiGenre != .all { return "\(model.apiGenre.name) \(model.apiType.title)" }
+        return model.apiType.title
     }
 }
 
 struct APICard: View {
     @Environment(AppModel.self) private var model
     let title: APITitle
+    var progress: Double? = nil
     @State private var hovering = false
 
     var body: some View {
         let watched = model.library.isWatched(title.libraryKey)
+        let saved = model.library.isSaved(title.id)
         let seeds = title.options.compactMap(\.entry.seeders).max()
         Button {
             model.selectedAPITitle = title
@@ -122,20 +93,52 @@ struct APICard: View {
                     .overlay {
                         ZStack {
                             LinearGradient(colors: [.black.opacity(0.1), .black.opacity(0.8)], startPoint: .top, endPoint: .bottom)
-                            VStack(spacing: 10) {
-                                Image(systemName: "play.circle.fill")
-                                    .font(.system(size: 44))
-                                    .foregroundStyle(.white, Theme.accent)
-                                if let stars = title.stars, let rating = title.rating {
-                                    VStack(spacing: 3) {
-                                        RatingStars(rating: stars)
-                                        Text("\(Int(rating.rounded()))%")
-                                            .font(.system(size: 11, weight: .semibold))
-                                    }
-                                }
-                            }
+                            Image(systemName: "play.circle.fill")
+                                .font(.system(size: 44))
+                                .foregroundStyle(.white, Theme.accent)
                         }
                         .opacity(hovering ? 1 : 0)
+                    }
+                    .overlay(alignment: .topTrailing) {
+                        if saved || hovering {
+                            Button {
+                                model.library.toggleSaved(title.saved)
+                            } label: {
+                                Image(systemName: saved ? "heart.fill" : "heart")
+                                    .font(.system(size: 13, weight: .bold))
+                                    .foregroundStyle(saved ? Theme.accent : .white)
+                                    .padding(7)
+                                    .background(Circle().fill(.black.opacity(0.55)))
+                            }
+                            .buttonStyle(.plain)
+                            .padding(7)
+                            .help(saved ? "Remove from My List" : "Add to My List")
+                        }
+                    }
+                    .overlay(alignment: .bottomLeading) {
+                        let tomatometer = model.ratings.tomatometer[title.id]
+                        if title.stars != nil || tomatometer != nil {
+                            HStack(spacing: 6) {
+                                if let stars = title.stars {
+                                    HStack(spacing: 3) {
+                                        Image(systemName: "star.fill")
+                                            .font(.system(size: 9, weight: .heavy))
+                                            .foregroundStyle(Theme.gold)
+                                        Text(String(format: "%.1f", stars))
+                                    }
+                                    .help(title.rating.map { "Rated \(Int($0.rounded()))%" } ?? "")
+                                }
+                                if let tomatometer {
+                                    TomatometerLabel(score: tomatometer, size: 11)
+                                }
+                            }
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(.black.opacity(0.65)))
+                            .padding(7)
+                        }
                     }
                     .overlay(alignment: .topLeading) {
                         HStack(spacing: 4) {
@@ -172,6 +175,17 @@ struct APICard: View {
                             .help("\(seeds) seeds")
                         }
                     }
+                    .overlay(alignment: .bottom) {
+                        if let progress {
+                            GeometryReader { geo in
+                                ZStack(alignment: .leading) {
+                                    Rectangle().fill(.white.opacity(0.25))
+                                    Rectangle().fill(Theme.accent).frame(width: geo.size.width * progress)
+                                }
+                            }
+                            .frame(height: 4)
+                        }
+                    }
                     .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                     .shadow(color: .black.opacity(hovering ? 0.6 : 0.35), radius: hovering ? 14 : 6, y: hovering ? 8 : 3)
                     .scaleEffect(hovering ? 1.035 : 1)
@@ -191,7 +205,9 @@ struct APICard: View {
         }
         .buttonStyle(.plain)
         .onHover { h in withAnimation(.easeOut(duration: 0.15)) { hovering = h } }
+        .task(id: title.id) { model.ratings.load(title.id) }
         .contextMenu {
+            Button(saved ? "Remove from My List" : "Add to My List") { model.library.toggleSaved(title.saved) }
             if title.type == .movies {
                 Button(watched ? "Mark as Unwatched" : "Mark as Watched") { model.library.setWatched(title.libraryKey, !watched) }
             }
@@ -277,7 +293,10 @@ struct APIDetailView: View {
             .padding(.top, 13)
         }
         .background(Theme.background)
-        .task(id: title.id) { await load() }
+        .task(id: title.id) {
+            model.ratings.load(title.id)
+            await load()
+        }
         .onDisappear { check.cancel() }
     }
 
@@ -348,6 +367,9 @@ struct APIDetailView: View {
                 }
                 .help(shown.votes.map { "\($0.formatted()) votes" } ?? "")
             }
+            if let tomatometer = model.ratings.tomatometer[title.id] {
+                TomatometerLabel(score: tomatometer, size: 15)
+            }
             if let cert = shown.certification {
                 Text(cert)
                     .font(.system(size: 10, weight: .bold))
@@ -355,7 +377,9 @@ struct APIDetailView: View {
                     .padding(.vertical, 2)
                     .overlay(RoundedRectangle(cornerRadius: 3).stroke(Theme.tertiary))
             }
-            if let source = model.apiBrowse.source { Text("from \(source.name)").foregroundStyle(Theme.tertiary) }
+            if let source = model.sources.sources.first(where: { $0.apiBase == title.base }) {
+                Text("from \(source.name)").foregroundStyle(Theme.tertiary)
+            }
         }
         .font(.system(size: 14, weight: .medium))
         .foregroundStyle(.white.opacity(0.85))
@@ -383,6 +407,7 @@ struct APIDetailView: View {
                     Label(watched ? "Watched" : "Mark Watched", systemImage: watched ? "eye.fill" : "eye")
                 }
                 .buttonStyle(AccentButtonStyle(prominent: false))
+                myListButton
                 imdbButton
             }
 
@@ -413,6 +438,7 @@ struct APIDetailView: View {
                         .buttonStyle(AccentButtonStyle())
                         .keyboardShortcut(.defaultAction)
                     }
+                    myListButton
                     imdbButton
                 }
                 if details.episodes.isEmpty {
@@ -427,6 +453,16 @@ struct APIDetailView: View {
             }
         }
         .padding(.top, 6)
+    }
+
+    private var myListButton: some View {
+        let saved = model.library.isSaved(title.id)
+        return Button {
+            model.library.toggleSaved(shown.saved)
+        } label: {
+            Label(saved ? "In My List" : "My List", systemImage: saved ? "heart.fill" : "heart")
+        }
+        .buttonStyle(AccentButtonStyle(prominent: false))
     }
 
     @ViewBuilder
@@ -551,12 +587,8 @@ struct APIDetailView: View {
     private func load() async {
         error = nil
         if details == nil { check.run(title.options) }
-        guard let base = model.apiBrowse.query?.base else {
-            error = APIError.badURL.localizedDescription
-            return
-        }
         do {
-            let d = try await APIClient.details(base, title)
+            let d = try await APIClient.details(title.base, title)
             details = d
             if d.title.options != title.options { check.run(d.title.options) }
             if season == nil, let next = upNext(d) {

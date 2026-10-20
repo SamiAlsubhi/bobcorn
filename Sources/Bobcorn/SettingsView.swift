@@ -3,8 +3,6 @@ import TorrentKit
 
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
-    @AppStorage(Pref.streamMode) private var streamMode = "torrent"
-    @AppStorage(Pref.dataSaver) private var dataSaver = false
     @AppStorage(Pref.subtitleSize) private var subtitleSize = 26.0
     @AppStorage(Pref.autoplayNext) private var autoplayNext = true
     @AppStorage(Pref.maxPeers) private var maxPeers = 60
@@ -12,20 +10,12 @@ struct SettingsView: View {
     @AppStorage(Pref.publicTrackers) private var publicTrackers = true
     @AppStorage(Pref.clearCacheOnQuit) private var clearCacheOnQuit = false
     @State private var cacheSize: Int64?
+    @State private var movingCache = false
+    @AppStorage(Pref.cacheFolder) private var cacheFolder = ""
 
     var body: some View {
         TabView {
             Form {
-                Picker("Stream Internet Archive titles", selection: $streamMode) {
-                    Text("Over BitTorrent").tag("torrent")
-                    Text("Directly over HTTPS").tag("direct")
-                }
-                .pickerStyle(.radioGroup)
-                Text("BitTorrent fetches from peers and the Archive's web seeds at once. If a swarm stalls, Bobcorn switches to the direct stream on its own.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Toggle("Prefer smaller files (data saver)", isOn: $dataSaver)
                 Toggle("Play the next episode automatically", isOn: $autoplayNext)
 
                 LabeledContent("Subtitle size") {
@@ -38,7 +28,7 @@ struct SettingsView: View {
 
                 LabeledContent("External players") {
                     let installed = ExternalPlayer.installed
-                    Text(installed.isEmpty ? "None found (IINA or VLC play MKV and AVI)" : installed.map(\.name).joined(separator: ", "))
+                    Text(installed.isEmpty ? "None found (IINA or VLC play AVI, and MKVs with DTS audio)" : installed.map(\.name).joined(separator: ", "))
                         .foregroundStyle(.secondary)
                 }
             }
@@ -72,7 +62,25 @@ struct SettingsView: View {
                         NSWorkspace.shared.activateFileViewerSelecting([AppModel.cacheDirectory])
                     }
                     .buttonStyle(.link)
+                    .id(cacheFolder)
                 }
+                if let chosen = AppModel.chosenCacheFolder, !FileManager.default.fileExists(atPath: chosen.path) {
+                    Text("\(chosen.path) isn't available, so downloads go to the default folder for now.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                HStack {
+                    if movingCache {
+                        ProgressView().controlSize(.small)
+                        Text("Moving the cache…").foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if !cacheFolder.isEmpty {
+                        Button("Use Default") { moveCache(to: nil) }
+                    }
+                    Button("Change…") { chooseCacheFolder() }
+                }
+                .disabled(movingCache)
                 LabeledContent("Size on disk") {
                     Text(cacheSize.map(formatSize) ?? "…").foregroundStyle(.secondary)
                 }
@@ -101,16 +109,35 @@ struct SettingsView: View {
                             Text("A streaming BitTorrent movie player").foregroundStyle(.secondary)
                         }
                     }
-                    Text("The catalog is the Internet Archive's collections of public-domain and openly licensed film, television and animation. You can also open any magnet link or .torrent file you have the right to download.")
+                    Text("Bobcorn shows the movies and shows of the sources you add, and streams them over BitTorrent while they download. You can also open any magnet link or .torrent file. Only add sources and open torrents you have the right to download.")
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    Link("Internet Archive: Moving Image Archive", destination: URL(string: "https://archive.org/details/movies")!)
                 }
             }
             .formStyle(.grouped)
             .tabItem { Label("About", systemImage: "info.circle") }
         }
         .frame(width: 560, height: 430)
+    }
+
+    private func chooseCacheFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Use This Folder"
+        panel.message = "Choose where Bobcorn keeps downloads. It makes a “Bobcorn Torrents” folder inside, and moves what's downloaded there."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        moveCache(to: url)
+    }
+
+    private func moveCache(to folder: URL?) {
+        movingCache = true
+        Task {
+            _ = await model.moveCache(to: folder)
+            movingCache = false
+            refreshSize()
+        }
     }
 
     private func refreshSize() {

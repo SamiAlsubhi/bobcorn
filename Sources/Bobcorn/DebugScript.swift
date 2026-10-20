@@ -6,15 +6,15 @@ import TorrentKit
 /// Debug builds only: drives the UI from a script so a change can be checked
 /// without anyone at the keyboard, writing window snapshots and player state.
 ///
-///   BOBCORN_DEBUG_SCRIPT="wait:6;shot:grid;detail:0;wait:4;shot:detail;play;wait:25;state;shot:player;quit"
+///   BOBCORN_DEBUG_SCRIPT="wait:4;shot:grid;apidetail:0;wait:4;shot:detail;apiplay;wait:25;state;shot:player;quit"
 ///   BOBCORN_DEBUG_OUT=/tmp/bobcorn-shots
 ///
-/// Steps: wait:<s>  shot:<name>  section:<movies|shows|animation|sources|myList>
-/// search:<text>  detail:<index>  back  play  magnet:<uri>  torrentfile:<path>
-/// playlargest  seek:<seconds>  state  close  quit
+/// Steps: wait:<s>  shot:<name>  section:<movies|shows|myList>  search:<text>
+/// back  magnet:<uri>  torrentfile:<path>  playlargest  seek:<seconds>  state
+/// lanurl:<host>  close  quit
 /// Sources: addsource:<name>|<feed>[|<search>]  addapi:<name>|<base url>
-/// clearsources  feeddetail:<index>  feedplay  apitype:<movies|shows>
-/// apisort:<sort>  apidetail:<index>  apiplay[:<episode index>]
+/// clearsources  feeddetail:<index>  feedplay  apisort:<sort>
+/// apidetail:<index>  apiplay[:<episode index>]
 @MainActor
 enum DebugScript {
     static func runIfRequested() {
@@ -53,25 +53,9 @@ enum DebugScript {
             if let s = CatalogSection(rawValue: arg) { model.section = s }
         case "search":
             model.searchText = arg
-        case "detail":
-            let i = Int(arg) ?? 0
-            if model.browse.items.indices.contains(i) { model.selectedItem = model.browse.items[i] }
         case "back":
-            model.selectedItem = nil
             model.selectedFeedTitle = nil
             model.selectedAPITitle = nil
-        case "play":
-            guard let item = model.selectedItem else { return log("no item selected") }
-            do {
-                let d = try await ArchiveClient.details(for: item)
-                guard let g = d.videos.first(where: { $0.preferred(dataSaver: false)?.isNative == true }) ?? d.videos.first else {
-                    return log("no videos")
-                }
-                log("playing \(g.title) [\(g.preferred(dataSaver: false)?.name ?? "?")] torrent=\(d.hasTorrent) servers=\(d.servers)")
-                model.play(details: d, group: g, variant: nil)
-            } catch {
-                log("details failed: \(error)")
-            }
         case "magnet":
             model.openMagnet(arg)
         case "addsource":
@@ -85,8 +69,6 @@ enum DebugScript {
             guard parts.count == 2 else { return log("addapi needs name|url") }
             model.sources.upsert(CustomSource(kind: .api, name: parts[0], feedURL: parts[1]))
             model.sourcesChanged()
-        case "apitype":
-            if let t = APIMediaType(rawValue: arg) { model.apiType = t }
         case "apisort":
             if let s = APISort(rawValue: arg) { model.apiSort = s }
         case "apidetail":
@@ -124,14 +106,6 @@ enum DebugScript {
             model.playFeed(best, in: t)
         case "torrentfile":
             model.open(url: URL(fileURLWithPath: arg))
-        case "probe":
-            if let p = SwarmProbe.latest {
-                for (name, a) in p.byFile.sorted(by: { $0.key < $1.key }) {
-                    log("  \(name): \(a.seedText), \(a.peers) partial peers")
-                }
-            } else {
-                log("no probe")
-            }
         case "playlargest":
             if let flow = model.torrentFlow, let f = flow.videoFiles.first { model.playTorrent(flow: flow, file: f) }
         case "state":
@@ -152,21 +126,35 @@ enum DebugScript {
                 for f in flow.videoFiles {
                     log("  \(f.name) \(formatSize(f.length)) \(flow.availability[f.index]?.seedText ?? "?")")
                 }
-            } else if model.section == .sources, model.currentSource?.kind == .api {
+            } else if model.section == .myList {
+                log("my list saved=\(model.library.saved.map(\.title)) continue=\(model.library.continueWatching.map(\.progress.title))")
+            } else if model.currentSource?.kind == .api {
                 let b = model.apiBrowse
                 log("api source=\(b.source?.name ?? "-") type=\(model.apiType.rawValue) sort=\(model.apiSort.rawValue) titles=\(b.titles.count) loading=\(b.isLoading) exhausted=\(b.exhausted) error=\(b.error ?? "-") detail=\(model.selectedAPITitle?.title ?? "-")")
                 for t in b.titles.prefix(6) {
                     log("  \(t.id) \(t.title) [\(t.year.map(String.init) ?? "-")] rating=\(t.rating.map { String(Int($0)) } ?? "-") seasons=\(t.seasonCount.map(String.init) ?? "-") options=\(t.options.map { "\($0.qualityLabel)/\($0.entry.seeders.map(String.init) ?? "?")s/\($0.entry.size.map(formatSize) ?? "?")" }.joined(separator: ", ")) poster=\(t.posterURL != nil)")
                 }
-            } else if model.section == .sources {
+            } else if model.currentSource != nil {
                 let f = model.feedBrowse
                 log("feed source=\(f.source?.name ?? "-") titles=\(f.titles.count) entries=\(f.entryCount) loading=\(f.isLoading) error=\(f.error ?? "-") detail=\(model.selectedFeedTitle?.displayTitle ?? "-")")
                 for t in f.titles.prefix(6) {
                     log("  \(t.displayTitle) [\(t.year.map(String.init) ?? "-")] options=\(t.options.map { "\($0.qualityLabel)/\($0.entry.seeders.map(String.init) ?? "?")s/\($0.entry.magnet != nil ? "mag" : "tor")" }.joined(separator: ", ")) img=\(t.imageURL != nil)")
                 }
             } else {
-                log("browse items=\(model.browse.items.count) total=\(model.browse.total) error=\(model.browse.error ?? "-") detail=\(model.selectedItem?.id ?? "-")")
+                log("no source")
             }
+        case "cachefolder":
+            // cachefolder:<path>, or cachefolder: for the default.
+            let moved = await model.moveCache(to: arg.isEmpty ? nil : URL(fileURLWithPath: arg, isDirectory: true))
+            log("cache moved=\(moved) now \(AppModel.cacheDirectory.path)")
+        case "tomatoes":
+            // Sample scores, rotten to fresh, on the grid's first titles.
+            for (i, t) in model.apiBrowse.titles.prefix(14).enumerated() { model.ratings.debugSet(t.id, [96, 42, 73, 12, 88, 58, 61][i % 7]) }
+        case "lanurl":
+            // lanurl:<host>: the playing stream's address for another device.
+            guard let url = model.playback?.streamURL else { return log("nothing playing") }
+            _ = try? await model.engine.server.startLAN()
+            log("lan \(model.engine.server.lanURL(for: url, host: arg)?.absoluteString ?? "-")")
         case "seek":
             _ = await model.playback?.player?.seek(to: CMTime(seconds: Double(arg) ?? 0, preferredTimescale: 600))
         case "close":

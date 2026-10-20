@@ -23,7 +23,6 @@ struct BobcornApp: App {
             CommandGroup(after: .textEditing) {
                 Button("Search") {
                     if model.playback == nil {
-                        model.selectedItem = nil
                         model.selectedFeedTitle = nil
                         model.selectedAPITitle = nil
                         model.searchFocusRequest += 1
@@ -32,9 +31,8 @@ struct BobcornApp: App {
                 .keyboardShortcut("f")
             }
             CommandMenu("Browse") {
-                ForEach(Array(model.visibleSections.enumerated()), id: \.element) { i, section in
+                ForEach(Array(CatalogSection.allCases.enumerated()), id: \.element) { i, section in
                     Button(section.title) {
-                        model.selectedItem = nil
                         model.selectedFeedTitle = nil
                         model.selectedAPITitle = nil
                         model.section = section

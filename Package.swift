@@ -12,10 +12,12 @@ let package = Package(
     targets: [
         .target(name: "TorrentKit"),
         .target(name: "Remux"),
-        .executableTarget(name: "Bobcorn", dependencies: ["TorrentKit", "Remux"]),
+        .target(name: "CastKit"),
+        .executableTarget(name: "Bobcorn", dependencies: ["TorrentKit", "Remux", "CastKit"]),
         .executableTarget(name: "TorrentCLI", dependencies: ["TorrentKit"]),
         .testTarget(name: "TorrentKitTests", dependencies: ["TorrentKit"]),
         .testTarget(name: "BobcornTests", dependencies: ["Bobcorn", "TorrentKit"]),
         .testTarget(name: "RemuxTests", dependencies: ["Remux"]),
+        .testTarget(name: "CastKitTests", dependencies: ["CastKit"]),
     ]
 )

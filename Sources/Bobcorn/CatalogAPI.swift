@@ -5,7 +5,7 @@ import TorrentKit
 // MARK: - Queries
 
 /// The two listings a catalog API serves.
-enum APIMediaType: String, CaseIterable, Identifiable {
+enum APIMediaType: String, CaseIterable, Identifiable, Codable {
     case movies, shows
 
     var id: String { rawValue }
@@ -82,11 +82,14 @@ struct APITitle: Identifiable, Hashable {
     let seasonCount: Int?
     /// A movie's torrents, one per quality and language.
     let options: [FeedOption]
+    /// The API it came from.
+    let base: URL
 
     /// The rating out of five, for stars.
     var stars: Double? { rating.map { $0 / 20 } }
     var imdbURL: URL? { URL(string: "https://www.imdb.com/title/\(id)/") }
     var libraryKey: String { "api:\(id)" }
+    var saved: SavedTitle { SavedTitle(id: id, type: type, title: title, year: year, poster: posterURL, base: base) }
 
     var qualities: [String] {
         Array(Set(options.compactMap(\.release.quality))).sorted { (Int($0.dropLast()) ?? 0) > (Int($1.dropLast()) ?? 0) }
@@ -118,6 +121,15 @@ struct APIDetails {
     }
 
     func key(_ episode: APIEpisode) -> String { "\(title.libraryKey):\(episode.id)" }
+}
+
+extension APITitle {
+    /// A title from My List, until its page loads the rest.
+    init(saved: SavedTitle) {
+        self.init(id: saved.id, type: saved.type, title: saved.title, year: saved.year, synopsis: nil, runtime: nil,
+                  rating: nil, votes: nil, certification: nil, posterURL: saved.poster, fanartURL: nil, genres: [],
+                  seasonCount: nil, options: [], base: saved.base)
+    }
 }
 
 extension FeedEntry {
@@ -351,9 +363,10 @@ private extension APITitle {
             type: type,
             title: title,
             year: year,
-            synopsis: raw.synopsis?.text.map(ArchiveClient.cleanHTML),
+            synopsis: raw.synopsis?.text.map(HTML.clean),
             runtime: raw.runtime?.int.flatMap { $0 > 0 ? $0 : nil },
-            rating: raw.rating?.value?.percentage?.double,
+            // 0 is what sources send for a title nobody has rated.
+            rating: raw.rating?.value?.percentage?.double.flatMap { $0 > 0 ? $0 : nil },
             votes: raw.rating?.value?.votes?.int,
             certification: raw.certification?.text.flatMap { $0.isEmpty ? nil : $0 },
             posterURL: Self.image(raw.images?.value?.poster, base),
@@ -361,14 +374,15 @@ private extension APITitle {
             // Slugs ("science-fiction") read as words; names ("Sci-Fi") stay.
             genres: (raw.genres?.list ?? []).map { $0 == $0.lowercased() ? $0.replacingOccurrences(of: "-", with: " ").capitalized : $0 },
             seasonCount: raw.num_seasons?.int,
-            options: makeOptions(raw.torrents?.value, release: ReleaseInfo(title: title, year: year), artwork: Self.image(raw.images?.value?.poster, base))
+            options: makeOptions(raw.torrents?.value, release: ReleaseInfo(title: title, year: year), artwork: Self.image(raw.images?.value?.poster, base)),
+            base: base
         )
     }
 
     func with(options: [FeedOption]) -> APITitle {
         APITitle(id: id, type: type, title: title, year: year, synopsis: synopsis, runtime: runtime, rating: rating,
                  votes: votes, certification: certification, posterURL: posterURL, fanartURL: fanartURL,
-                 genres: genres, seasonCount: seasonCount, options: options)
+                 genres: genres, seasonCount: seasonCount, options: options, base: base)
     }
 
     /// Image URLs may be relative to the API.
@@ -386,8 +400,8 @@ private extension APIEpisode {
         self.init(
             season: season,
             episode: episode,
-            title: raw.title?.text.flatMap { $0.isEmpty ? nil : ArchiveClient.cleanHTML($0) } ?? "Episode \(episode)",
-            overview: raw.overview?.text.map(ArchiveClient.cleanHTML),
+            title: raw.title?.text.flatMap { $0.isEmpty ? nil : HTML.clean($0) } ?? "Episode \(episode)",
+            overview: raw.overview?.text.map(HTML.clean),
             aired: raw.first_aired?.double.flatMap { $0 != 0 ? Date(timeIntervalSince1970: $0) : nil },
             options: makeOptions(raw.torrents?.value, release: release, artwork: show.posterURL, fallbackName: "\(show.title) \(tag)")
         )

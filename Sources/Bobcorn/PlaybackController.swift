@@ -1,15 +1,12 @@
 import AVFoundation
 import AppKit
+import CastKit
 import Observation
 import Remux
 import TorrentKit
 
 struct PlayableItem: Identifiable {
     enum Media {
-        /// An Internet Archive file: streamed through its torrent when there is
-        /// one, straight over HTTPS otherwise. Each URL list is in the order to
-        /// try, since a data node can be down while others hold the same file.
-        case archive(identifier: String, file: String, torrentURLs: [URL], directURLs: [URL], webSeeds: [String])
         /// A file of a torrent the user opened.
         case torrent(session: TorrentSession, file: TorrentFile)
         /// A catalog API's magnet or .torrent URL, opened when it plays. An
@@ -21,7 +18,6 @@ struct PlayableItem: Identifiable {
     let key: String
     let title: String
     let media: Media
-    let isNative: Bool
     let subtitles: [SubtitleTrack]
 
     var id: String { key }
@@ -32,7 +28,8 @@ struct PlaybackRequest {
     var artwork: URL?
     var items: [PlayableItem]
     var startIndex: Int
-    var catalogItem: CatalogItem?
+    /// The source's title, so My List can offer it under Continue Watching.
+    var saved: SavedTitle?
     /// A torrent the user opened, stopped when the player closes.
     var ownedSession: TorrentSession?
 }
@@ -70,6 +67,12 @@ final class PlaybackController {
     private(set) var activeSubtitleID: String?
     private(set) var cueText: String?
     private(set) var localSubtitles: [SubtitleTrack] = []
+    /// The Chromecast playing this instead of the Mac, if any.
+    private(set) var castDevice: CastDevice?
+    private(set) var castStatus: CastStatus?
+    private var cast: CastSession?
+    /// This Mac's address on the Chromecast's network, once connected.
+    private var castAddress: String?
 
     private weak var app: AppModel?
     private var session: TorrentSession?
@@ -82,11 +85,8 @@ final class PlaybackController {
     private var prepareTask: Task<Void, Never>?
     private var statsTask: Task<Void, Never>?
     private var noticeTask: Task<Void, Never>?
-    private var lastDownloaded: Int64 = -1
-    private var lastProgressAt = Date()
     private var lastSaved = Date.distantPast
     private var pendingSeek: Double?
-    private var directCandidates: [URL] = []
     private var stopped = false
 
     init(request: PlaybackRequest, app: AppModel) {
@@ -122,6 +122,8 @@ final class PlaybackController {
         guard !stopped else { return }
         stopped = true
         saveProgress()
+        cast?.stop()
+        cast = nil
         teardownItem()
         statsTask?.cancel()
         noticeTask?.cancel()
@@ -153,8 +155,6 @@ final class PlaybackController {
         cues = []
         cueText = nil
         activeSubtitleID = nil
-        lastDownloaded = -1
-        lastProgressAt = Date()
         pendingSeek = app?.library.resumePosition(current.key)
         prepareTask = Task { [weak self] in await self?.prepare() }
     }
@@ -163,34 +163,6 @@ final class PlaybackController {
         guard let app else { return }
         let item = current
         switch item.media {
-        case .archive(let identifier, let file, let torrentURLs, let directURLs, let extraSeeds):
-            guard Pref.prefersTorrent, !torrentURLs.isEmpty else {
-                playDirect(directURLs)
-                return
-            }
-            statusText = "Fetching torrent"
-            do {
-                let meta = try await app.archiveMetainfo(identifier: identifier, torrentURLs: torrentURLs, webSeeds: extraSeeds)
-                guard !Task.isCancelled else { return }
-                guard let tf = meta.info.files.first(where: { $0.displayPath == file }) else {
-                    throw TorrentError.noSuchFile
-                }
-                let s = app.engineForNewTorrent().session(for: .metainfo(meta))
-                session = s
-                sessionIsOurs = true
-                s.select(fileIndex: tf.index)
-                let url = try await app.engine.streamURL(for: s, file: tf)
-                guard !Task.isCancelled else { return }
-                viaTorrent = true
-                directCandidates = directURLs
-                statusText = "Connecting to peers"
-                play(url)
-            } catch {
-                guard !Task.isCancelled else { return }
-                show("Torrent unavailable, streaming directly from the Internet Archive")
-                playDirect(directURLs)
-            }
-
         case .torrent(let s, let file):
             session = s
             sessionIsOurs = false
@@ -294,20 +266,12 @@ final class PlaybackController {
         return (native.isEmpty ? pool : native).max { $0.length < $1.length }
     }
 
-    /// Plays the first URL; a failure moves on to the next.
-    private func playDirect(_ urls: [URL]) {
-        guard let first = urls.first else {
-            phase = .failed("The Internet Archive has no working copy of this file right now.")
-            return
-        }
-        viaTorrent = false
-        directCandidates = Array(urls.dropFirst())
-        statusText = "Connecting to the Internet Archive"
-        play(first)
-    }
-
     private func play(_ url: URL) {
         streamURL = url
+        if cast != nil {
+            castLoad(url)
+            return
+        }
         let item = AVPlayerItem(url: url)
         item.preferredForwardBufferDuration = 20
         let p = player ?? AVPlayer()
@@ -349,14 +313,7 @@ final class PlaybackController {
             }
         case .failed:
             let message = item.error?.localizedDescription ?? "The video could not be played."
-            if viaTorrent, case .archive = current.media {
-                fallBackToDirect(reason: "Torrent stream failed, switching to direct streaming")
-            } else if case .archive = current.media, !directCandidates.isEmpty {
-                let resumeAt = pendingSeek
-                teardownObservers()
-                pendingSeek = resumeAt
-                playDirect(directCandidates)
-            } else if fileURL != nil {
+            if fileURL != nil {
                 remuxFailed("macOS couldn't play the converted stream (\(message))")
             } else {
                 phase = .failed(message)
@@ -399,23 +356,6 @@ final class PlaybackController {
         }
     }
 
-    private func fallBackToDirect(reason: String) {
-        let resumeAt = player?.currentTime().seconds ?? 0
-        if sessionIsOurs, let s = session {
-            // The detail page may still hold the swarm open: stop downloading.
-            s.clearSelection()
-            app?.engine.release(s)
-        }
-        session = nil
-        sessionIsOurs = false
-        viaTorrent = false
-        stats = nil
-        show(reason)
-        if resumeAt > 1 { pendingSeek = resumeAt }
-        teardownObservers()
-        playDirect(directCandidates)
-    }
-
     // MARK: - Torrent status
 
     private func pollStats() async {
@@ -423,10 +363,6 @@ final class PlaybackController {
         let st = await s.stats()
         guard s === session else { return }
         stats = st
-        if st.downloaded != lastDownloaded {
-            lastDownloaded = st.downloaded
-            lastProgressAt = Date()
-        }
         if !hasStarted {
             switch st.phase {
             case .fetchingMetadata:
@@ -436,13 +372,6 @@ final class PlaybackController {
             default:
                 statusText = st.downloadRate > 0 ? "Buffering" : (st.connectedPeers + st.activeWebSeeds > 0 ? "Requesting data" : "Looking for peers")
             }
-        }
-        // A torrent that stopped moving before playback could start: the
-        // Internet Archive serves the same file directly.
-        if viaTorrent, case .archive = current.media,
-           player?.timeControlStatus != .playing,
-           Date().timeIntervalSince(lastProgressAt) > 20 {
-            fallBackToDirect(reason: "The swarm stalled, switching to direct streaming")
         }
     }
 
@@ -462,6 +391,125 @@ final class PlaybackController {
         show("Stream URL copied")
     }
 
+    // MARK: - Chromecast
+
+    var isCasting: Bool { cast != nil }
+
+    /// Moves playback to `device`, from where the Mac is.
+    func startCasting(to device: CastDevice) {
+        guard castDevice?.id != device.id else { return }
+        if cast != nil { endCasting(nil, resumeHere: false) }
+        let position = player?.currentTime().seconds
+        player?.pause()
+        let session = CastSession(device: device)
+        cast = session
+        castDevice = device
+        castStatus = CastStatus()
+        session.onStatus = { [weak self] status in
+            MainActor.assumeIsolated { self?.castStatusChanged(status, from: session) }
+        }
+        Task { [weak self] in
+            do {
+                let address = try await session.connect()
+                guard let self, self.cast === session else { return }
+                self.castAddress = address
+                if let url = self.streamURL {
+                    if self.hasStarted, let position, position > 1 { self.pendingSeek = position }
+                    self.castLoad(url)
+                }
+            } catch {
+                guard let self, self.cast === session else { return }
+                self.endCasting(error.localizedDescription)
+            }
+        }
+    }
+
+    func stopCasting() {
+        endCasting(nil)
+    }
+
+    func castTogglePlay() {
+        if castStatus?.state == .playing { cast?.pause() } else { cast?.play() }
+    }
+
+    func castSeek(to seconds: Double) {
+        cast?.seek(to: seconds)
+    }
+
+    /// Hands the device a URL it can reach for the stream this Mac serves.
+    private func castLoad(_ url: URL) {
+        guard let cast, let address = castAddress, let app else { return }
+        let start = pendingSeek ?? 0
+        pendingSeek = nil
+        let media = { (lan: URL) in
+            CastMedia(url: lan, contentType: Self.castContentType(url), title: self.displayTitle,
+                      subtitle: self.displaySubtitle, imageURL: self.request.artwork, startTime: start)
+        }
+        Task {
+            do {
+                try await app.engine.server.startLAN()
+            } catch {
+                endCasting("Couldn't share the stream on the network: \(error.localizedDescription)")
+                return
+            }
+            guard self.cast === cast, let lan = app.engine.server.lanURL(for: url, host: address) else { return }
+            cast.load(media(lan))
+        }
+    }
+
+    static func castContentType(_ url: URL) -> String {
+        switch url.pathExtension.lowercased() {
+        case "m3u8": return "application/x-mpegurl"
+        case "webm": return "video/webm"
+        default: return "video/mp4"
+        }
+    }
+
+    private func castStatusChanged(_ status: CastStatus, from session: CastSession) {
+        guard session === cast else { return }
+        castStatus = status
+        switch status.state {
+        case .connecting, .loading:
+            if !hasStarted { statusText = "Starting on \(castDevice?.name ?? "the Chromecast")" }
+        case .playing, .paused:
+            hasStarted = true
+            isBuffering = false
+            if phase == .preparing { phase = .playing }
+        case .buffering:
+            isBuffering = hasStarted
+        case .finished:
+            saveProgress(finished: true)
+            if hasNext && Pref.autoplay { playNext() }
+        case .failed(let why):
+            endCasting(why)
+        case .ended:
+            endCasting("Casting to \(castDevice?.name ?? "the Chromecast") stopped")
+        case .idle:
+            break
+        }
+        if Date().timeIntervalSince(lastSaved) > 5 { saveProgress() }
+    }
+
+    /// Back to the Mac, where the device left off.
+    private func endCasting(_ message: String?, resumeHere: Bool = true) {
+        let position = castStatus.map(\.currentTime)
+        saveProgress()
+        cast?.stop()
+        cast = nil
+        castDevice = nil
+        castStatus = nil
+        castAddress = nil
+        if let message { show(message) }
+        guard resumeHere, !stopped else { return }
+        if let p = player, p.currentItem != nil {
+            if let position, position > 1 { p.seek(to: CMTime(seconds: position, preferredTimescale: 600)) }
+            p.play()
+        } else if let url = streamURL, phase != .needsExternalPlayer {
+            if let position, position > 1 { pendingSeek = position }
+            play(url)
+        }
+    }
+
     // MARK: - Subtitles
 
     func selectSubtitle(_ id: String?) {
@@ -474,7 +522,6 @@ final class PlaybackController {
             do {
                 let data: Data
                 switch track.source {
-                case .remote(let urls): data = try await ArchiveClient.fetchFirst(urls)
                 case .local(let url): data = try Data(contentsOf: url)
                 case .torrent(let fileIndex):
                     guard let session else { throw TorrentError.noSuchFile }
@@ -514,11 +561,21 @@ final class PlaybackController {
 
     private func saveProgress(finished: Bool = false) {
         lastSaved = Date()
-        guard let p = player, let item = p.currentItem, hasStarted else { return }
-        let duration = item.duration.seconds
+        guard hasStarted else { return }
+        let duration: Double
+        let now: Double
+        if cast != nil, let status = castStatus {
+            guard let d = status.duration else { return }
+            duration = d
+            now = status.currentTime
+        } else {
+            guard let p = player, let item = p.currentItem else { return }
+            duration = item.duration.seconds
+            now = p.currentTime().seconds
+        }
         guard duration.isFinite, duration > 0 else { return }
-        let position = finished ? duration : p.currentTime().seconds
-        app?.library.record(current.key, position: position, duration: duration, title: displayTitle, item: request.catalogItem)
+        let position = finished ? duration : now
+        app?.library.record(current.key, position: position, duration: duration, title: displayTitle, saved: request.saved)
     }
 
     private func teardownObservers() {
@@ -550,6 +607,5 @@ final class PlaybackController {
         fileURL = nil
         remuxSummary = nil
         externalReason = nil
-        directCandidates = []
     }
 }

@@ -16,27 +16,21 @@ final class AppModel {
     var section: CatalogSection = .movies {
         didSet {
             if section != oldValue {
-                selectedItem = nil
                 selectedFeedTitle = nil
                 selectedAPITitle = nil
                 reloadBrowse()
             }
         }
     }
-    private var genreBySection: [CatalogSection: Genre] = [:]
-    var sort: SortOption = .popular {
-        didSet { if sort != oldValue { reloadBrowse() } }
-    }
     var searchText = "" {
         didSet { if searchText != oldValue { scheduleSearch() } }
     }
-    var selectedItem: CatalogItem?
     var selectedFeedTitle: FeedTitle?
     var selectedAPITitle: APITitle?
-    /// The custom source shown under Sources.
+    /// The source whose movies and shows the tabs show.
     var sourceID: UUID? {
         didSet {
-            if sourceID != oldValue, section == .sources {
+            if sourceID != oldValue {
                 selectedFeedTitle = nil
                 selectedAPITitle = nil
                 reloadBrowse()
@@ -47,9 +41,7 @@ final class AppModel {
         didSet { feedBrowse.resort(feedSort) }
     }
     /// What a catalog API source lists, and how.
-    var apiType: APIMediaType = .movies {
-        didSet { if apiType != oldValue { selectedAPITitle = nil; reloadBrowse() } }
-    }
+    var apiType: APIMediaType { section == .shows ? .shows : .movies }
     var apiGenre: Genre = .all {
         didSet { if apiGenre != oldValue { reloadBrowse() } }
     }
@@ -59,21 +51,39 @@ final class AppModel {
     var playback: PlaybackController?
     var torrentFlow: TorrentFlow?
     var magnetPromptVisible = false
+    var addSourceVisible = false
     var searchFocusRequest = 0
     var alertMessage: String?
 
     let library = Library()
-    let browse = BrowseModel()
     let sources = SourceStore()
     let feedBrowse = FeedBrowseModel()
     let apiBrowse = APIBrowseModel()
+    let castDevices = CastDevices()
+    let ratings = Ratings()
     private(set) var engine: TorrentEngine
     private var engineConfig: TorrentConfiguration
     private var searchTask: Task<Void, Never>?
-    private var metainfoCache: [String: Metainfo] = [:]
 
-    nonisolated static let cacheDirectory: URL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("Bobcorn/Torrents", isDirectory: true)
+    /// A debug build keeps its downloads apart, like its library.
+    nonisolated static let defaultCacheDirectory: URL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent(Bundle.main.bundleIdentifier?.hasSuffix(".debug") == true ? "Bobcorn Debug/Torrents" : "Bobcorn/Torrents", isDirectory: true)
+
+    /// The folder picked in Settings, when there is one and it's there (a
+    /// drive can be unplugged).
+    nonisolated static var chosenCacheFolder: URL? {
+        guard let path = UserDefaults.standard.string(forKey: Pref.cacheFolder), !path.isEmpty else { return nil }
+        return URL(fileURLWithPath: path, isDirectory: true)
+    }
+
+    /// Where torrents download. In a chosen folder, a subfolder of its own,
+    /// so clearing the cache never touches anything else there.
+    nonisolated static var cacheDirectory: URL {
+        if let folder = chosenCacheFolder, FileManager.default.fileExists(atPath: folder.path) {
+            return folder.appendingPathComponent("Bobcorn Torrents", isDirectory: true)
+        }
+        return defaultCacheDirectory
+    }
 
     init() {
         Pref.register()
@@ -82,41 +92,19 @@ final class AppModel {
         engine = TorrentEngine(configuration: config)
     }
 
-    var genre: Genre {
-        get { genreBySection[section] ?? .all }
-        set {
-            guard newValue != genre else { return }
-            genreBySection[section] = newValue
-            reloadBrowse()
+    /// Loads the current source's movies or shows. A feed is fetched once for
+    /// both tabs unless `force`.
+    func reloadBrowse(force: Bool = false) {
+        guard section != .myList, let source = currentSource else { return }
+        let search = searchText.trimmingCharacters(in: .whitespaces)
+        if let base = source.apiBase {
+            apiBrowse.load(source, APIQuery(sourceID: source.id, base: base, type: apiType, genre: apiGenre, sort: apiSort, search: search))
+        } else {
+            feedBrowse.load(source, search: search, sort: feedSort, force: force)
         }
     }
 
-    var query: CatalogQuery {
-        CatalogQuery(section: section, genre: genre, sort: sort, search: searchText.trimmingCharacters(in: .whitespaces))
-    }
-
-    func reloadBrowse() {
-        switch section {
-        case .myList:
-            return
-        case .sources:
-            if let source = currentSource, let base = source.apiBase {
-                let search = searchText.trimmingCharacters(in: .whitespaces)
-                apiBrowse.load(source, APIQuery(sourceID: source.id, base: base, type: apiType, genre: apiGenre, sort: apiSort, search: search))
-            } else {
-                feedBrowse.load(currentSource, search: searchText, sort: feedSort)
-            }
-        default:
-            browse.load(query)
-        }
-    }
-
-    // MARK: - Custom sources
-
-    /// The top-bar tabs: Sources appears once a source is enabled.
-    var visibleSections: [CatalogSection] {
-        CatalogSection.allCases.filter { $0 != .sources || !sources.enabled.isEmpty }
-    }
+    // MARK: - Sources
 
     var currentSource: CustomSource? {
         sources.enabled.first { $0.id == sourceID } ?? sources.enabled.first
@@ -124,14 +112,15 @@ final class AppModel {
 
     /// Called after Settings adds, edits, enables or removes a source.
     func sourcesChanged() {
-        guard section == .sources else { return }
-        if sources.enabled.isEmpty {
-            section = .movies
-        } else {
-            selectedFeedTitle = nil
-            selectedAPITitle = nil
-            reloadBrowse()
-        }
+        selectedFeedTitle = nil
+        selectedAPITitle = nil
+        reloadBrowse(force: true)
+    }
+
+    func addSource(_ source: CustomSource) {
+        sources.upsert(source)
+        sourceID = source.id
+        sourcesChanged()
     }
 
     /// Plays one torrent a feed lists: once its file list arrives, a lone
@@ -172,12 +161,11 @@ final class AppModel {
                     key: details.key(e),
                     title: "\(e.tag) · \(e.title)",
                     media: .link(link, season: e.season, episode: e.episode),
-                    isNative: true,
                     subtitles: []
                 ))
             }
         } else if let link = option.entry.link {
-            items = [PlayableItem(key: show.libraryKey, title: show.title, media: .link(link, season: nil, episode: nil), isNative: true, subtitles: [])]
+            items = [PlayableItem(key: show.libraryKey, title: show.title, media: .link(link, season: nil, episode: nil), subtitles: [])]
         }
         guard !items.isEmpty else {
             alertMessage = "This entry has no magnet link or .torrent file."
@@ -188,7 +176,7 @@ final class AppModel {
             artwork: show.posterURL,
             items: items,
             startIndex: start,
-            catalogItem: nil,
+            saved: show.saved,
             ownedSession: nil
         ))
     }
@@ -218,7 +206,7 @@ final class AppModel {
     func engineForNewTorrent() -> TorrentEngine {
         let c = Self.currentConfig()
         if c.maxPeers != engineConfig.maxPeers || c.enableDHT != engineConfig.enableDHT
-            || c.usePublicTrackers != engineConfig.usePublicTrackers,
+            || c.usePublicTrackers != engineConfig.usePublicTrackers || c.cacheDirectory != engineConfig.cacheDirectory,
             engine.activeSessionCount == 0 {
             engine.stopAll()
             engine.server.stop()
@@ -228,18 +216,6 @@ final class AppModel {
         return engine
     }
 
-    /// An Internet Archive item's torrent, with the item's current data nodes
-    /// added as web seeds. Kept for the session: the detail page and the
-    /// player use the same one.
-    func archiveMetainfo(identifier: String, torrentURLs: [URL], webSeeds: [String]) async throws -> Metainfo {
-        if let cached = metainfoCache[identifier] { return cached }
-        let fetched = try Metainfo(data: try await ArchiveClient.fetchFirst(torrentURLs))
-        let seeds = webSeeds + fetched.webSeeds.filter { !webSeeds.contains($0) }
-        let meta = Metainfo(info: fetched.info, trackers: fetched.trackers, webSeeds: seeds)
-        metainfoCache[identifier] = meta
-        return meta
-    }
-
     func clearCache() {
         guard playback == nil, torrentFlow == nil else {
             alertMessage = "Stop playback before clearing the cache."
@@ -247,6 +223,45 @@ final class AppModel {
         }
         engine.stopAll()
         try? FileManager.default.removeItem(at: Self.cacheDirectory)
+    }
+
+    /// Downloads go to `folder` from now on (nil: back to the default), and
+    /// what's downloaded already moves there. False if it can't now.
+    func moveCache(to folder: URL?) async -> Bool {
+        guard playback == nil, torrentFlow == nil else {
+            alertMessage = "Stop playback before moving the cache."
+            return false
+        }
+        let old = Self.cacheDirectory
+        if let folder {
+            UserDefaults.standard.set(folder.path, forKey: Pref.cacheFolder)
+        } else {
+            UserDefaults.standard.removeObject(forKey: Pref.cacheFolder)
+        }
+        let new = Self.cacheDirectory
+        guard old.standardizedFileURL != new.standardizedFileURL else { return true }
+        engine.stopAll()
+        let failure: String? = await Task.detached {
+            let fm = FileManager.default
+            do {
+                try fm.createDirectory(at: new, withIntermediateDirectories: true)
+            } catch {
+                return "Bobcorn can't write to that folder: \(error.localizedDescription)"
+            }
+            // Torrent by torrent, so a half-done move still leaves each whole.
+            for item in (try? fm.contentsOfDirectory(at: old, includingPropertiesForKeys: nil)) ?? [] {
+                let target = new.appendingPathComponent(item.lastPathComponent)
+                if !fm.fileExists(atPath: target.path) { try? fm.moveItem(at: item, to: target) }
+            }
+            if (try? fm.contentsOfDirectory(atPath: old.path))?.isEmpty == true { try? fm.removeItem(at: old) }
+            return nil
+        }.value
+        if let failure {
+            if folder != nil { UserDefaults.standard.removeObject(forKey: Pref.cacheFolder) }
+            alertMessage = failure
+            return false
+        }
+        return true
     }
 
     func shutdown() {
@@ -259,39 +274,6 @@ final class AppModel {
     }
 
     // MARK: - Playback
-
-    func play(details: ItemDetails, group: VideoGroup, variant: VideoVariant?) {
-        let dataSaver = Pref.dataSaverOn
-        let subtitles = details.subtitles.map {
-            SubtitleTrack(id: $0.name, label: $0.label, source: .remote(details.urls(for: $0.name)))
-        }
-        let items = details.videos.map { g -> PlayableItem in
-            let v = (g.id == group.id ? variant : nil) ?? g.preferred(dataSaver: dataSaver) ?? g.variants[0]
-            return PlayableItem(
-                key: "ia:\(details.item.id):\(g.id)",
-                title: details.videos.count > 1 ? g.title : details.item.title,
-                media: .archive(
-                    identifier: details.item.id,
-                    file: v.name,
-                    torrentURLs: details.torrentURLs,
-                    directURLs: details.urls(for: v.name),
-                    webSeeds: details.webSeeds
-                ),
-                isNative: v.isNative,
-                subtitles: subtitles
-            )
-        }
-        let start = details.videos.firstIndex { $0.id == group.id } ?? 0
-        let request = PlaybackRequest(
-            title: details.item.title,
-            artwork: details.item.posterURL,
-            items: items,
-            startIndex: start,
-            catalogItem: details.item,
-            ownedSession: nil
-        )
-        startPlayback(request)
-    }
 
     func startPlayback(_ request: PlaybackRequest) {
         playback?.stop()
@@ -366,7 +348,6 @@ final class AppModel {
                 key: "bt:\(info.infoHashHex):\(f.index)",
                 title: (f.name as NSString).deletingPathExtension,
                 media: .torrent(session: flow.session, file: f),
-                isNative: f.isNativelyPlayable,
                 subtitles: subtitles
             )
         }
@@ -375,7 +356,7 @@ final class AppModel {
             artwork: flow.presentation?.artwork,
             items: items,
             startIndex: playable.firstIndex { $0.index == file.index } ?? 0,
-            catalogItem: nil,
+            saved: nil,
             ownedSession: flow.session
         )
         flow.handedOff = true
@@ -389,60 +370,6 @@ final class AppModel {
 struct TorrentPresentation {
     let title: String
     let artwork: URL?
-}
-
-/// The listing behind the poster grid, loaded a page at a time.
-@MainActor
-@Observable
-final class BrowseModel {
-    private(set) var items: [CatalogItem] = []
-    private(set) var isLoading = false
-    private(set) var error: String?
-    private(set) var exhausted = false
-    private(set) var total = 0
-    private var query: CatalogQuery?
-    private var page = 0
-    private var task: Task<Void, Never>?
-    private var seen = Set<String>()
-
-    func load(_ q: CatalogQuery) {
-        task?.cancel()
-        query = q
-        items = []
-        seen = []
-        page = 0
-        exhausted = false
-        error = nil
-        isLoading = false
-        loadMore()
-    }
-
-    func loadMore() {
-        guard let query, !isLoading, !exhausted else { return }
-        isLoading = true
-        error = nil
-        let next = page + 1
-        task = Task { [weak self] in
-            do {
-                let result = try await ArchiveClient.search(query, page: next)
-                guard let self, !Task.isCancelled, self.query == query else { return }
-                let fresh = result.items.filter { self.seen.insert($0.id).inserted }
-                self.items.append(contentsOf: fresh)
-                self.page = next
-                self.total = result.total
-                self.exhausted = result.items.count < ArchiveClient.pageSize || self.items.count >= result.total
-                self.isLoading = false
-            } catch {
-                guard let self, !Task.isCancelled, self.query == query else { return }
-                self.error = error.localizedDescription
-                self.isLoading = false
-            }
-        }
-    }
-
-    func retry() {
-        if let query, items.isEmpty { load(query) } else { loadMore() }
-    }
 }
 
 /// A magnet or .torrent being opened: waits for the file list, then lets the

@@ -595,8 +595,14 @@ final class FeedBrowseModel {
     private(set) var source: CustomSource?
     private var task: Task<Void, Never>?
 
-    func load(_ source: CustomSource?, search: String, sort: FeedSort) {
+    private var loadedQuery: String?
+
+    func load(_ source: CustomSource?, search: String, sort: FeedSort, force: Bool = false) {
+        let query = search.trimmingCharacters(in: .whitespaces)
+        // Both tabs show the same feed: fetched once.
+        if !force, source == self.source, query == loadedQuery, error == nil, isLoading || !titles.isEmpty { return }
         task?.cancel()
+        loadedQuery = query
         self.source = source
         titles = []
         entryCount = 0
@@ -606,7 +612,6 @@ final class FeedBrowseModel {
             return
         }
         isLoading = true
-        let query = search.trimmingCharacters(in: .whitespaces)
         task = Task { [weak self] in
             do {
                 let searching = !query.isEmpty && source.canSearch

@@ -1,4 +1,5 @@
 import AVKit
+import CastKit
 import SwiftUI
 import TorrentKit
 
@@ -13,7 +14,7 @@ struct PlayerScreen: View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            if let player = controller.player {
+            if let player = controller.player, !controller.isCasting {
                 VideoSurface(player: player)
                     .ignoresSafeArea()
             }
@@ -34,6 +35,8 @@ struct PlayerScreen: View {
             }
 
             switch controller.phase {
+            case _ where controller.isCasting:
+                CastPanel(controller: controller)
             case .preparing:
                 LoadingPanel(controller: controller)
             case .needsExternalPlayer, .external:
@@ -48,7 +51,7 @@ struct PlayerScreen: View {
 
             VStack {
                 topBar
-                    .opacity(chromeVisible || controller.phase != .playing ? 1 : 0)
+                    .opacity(chromeVisible || controller.phase != .playing || controller.isCasting ? 1 : 0)
                 Spacer()
             }
 
@@ -71,7 +74,11 @@ struct PlayerScreen: View {
         .onContinuousHover { phase in
             if case .active = phase { poke() }
         }
-        .onAppear { poke() }
+        .onAppear {
+            poke()
+            model.castDevices.start()
+        }
+        .onDisappear { model.castDevices.stop() }
         .onExitCommand { model.closePlayback() }
     }
 
@@ -114,6 +121,10 @@ struct PlayerScreen: View {
                 }
                 .buttonStyle(ChromeButtonStyle())
                 .help("Next episode")
+            }
+
+            if controller.phase == .playing || controller.phase == .preparing {
+                CastMenu(controller: controller)
             }
 
             Menu {
@@ -299,10 +310,6 @@ private struct LoadingPanel: View {
                         Stat(value: formatSize(s.bufferedAhead), label: "Buffered")
                     }
                     .padding(.top, 6)
-                } else if !controller.viaTorrent && controller.streamURL != nil {
-                    Text("Streaming directly from the Internet Archive")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Theme.tertiary)
                 }
 
                 Button("Cancel") { model.closePlayback() }
@@ -412,5 +419,149 @@ private struct FailurePanel: View {
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black.opacity(0.85))
+    }
+}
+
+// MARK: - Chromecast
+
+private struct CastMenu: View {
+    @Environment(AppModel.self) private var model
+    let controller: PlaybackController
+
+    var body: some View {
+        Menu {
+            let devices = model.castDevices.devices
+            if devices.isEmpty {
+                Text("Looking for Chromecasts…")
+            }
+            ForEach(devices) { device in
+                Button {
+                    controller.startCasting(to: device)
+                } label: {
+                    if controller.castDevice?.id == device.id {
+                        Label(device.name, systemImage: "checkmark")
+                    } else {
+                        Text(device.name)
+                    }
+                }
+            }
+            if controller.isCasting {
+                Divider()
+                Button("Stop Casting") { controller.stopCasting() }
+            }
+        } label: {
+            Image(systemName: controller.isCasting ? "tv.fill" : "tv")
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Play on a Chromecast")
+    }
+}
+
+/// While a Chromecast plays: what's on, and its controls.
+private struct CastPanel: View {
+    let controller: PlaybackController
+    @State private var scrub: Double?
+
+    var body: some View {
+        let status = controller.castStatus ?? CastStatus()
+        let name = controller.castDevice?.name ?? "Chromecast"
+        ZStack {
+            if let art = controller.request.artwork {
+                BlurredBackdrop(url: art)
+                    .opacity(0.35)
+                    .ignoresSafeArea()
+            }
+            Color.black.opacity(0.55).ignoresSafeArea()
+
+            VStack(spacing: 18) {
+                Image(systemName: "tv.fill")
+                    .font(.system(size: 44))
+                    .foregroundStyle(Theme.accent)
+                Text(heading(status.state, name))
+                    .font(.system(size: 22, weight: .bold))
+                VStack(spacing: 4) {
+                    Text(controller.displayTitle)
+                        .font(.system(size: 15, weight: .semibold))
+                    if let sub = controller.displaySubtitle {
+                        Text(sub).font(.system(size: 13)).foregroundStyle(Theme.secondary)
+                    }
+                }
+                .multilineTextAlignment(.center)
+
+                if let duration = status.duration, duration > 0 {
+                    VStack(spacing: 6) {
+                        Slider(value: Binding(get: { min(duration, scrub ?? status.currentTime) }, set: { scrub = $0 }),
+                               in: 0...duration) { editing in
+                            if !editing, let target = scrub {
+                                controller.castSeek(to: target)
+                                scrub = nil
+                            }
+                        }
+                        .tint(Theme.accent)
+                        HStack {
+                            Text(formatTime(scrub ?? status.currentTime))
+                            Spacer()
+                            Text(formatTime(duration))
+                        }
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(Theme.secondary)
+                    }
+                    .frame(width: 460)
+                } else {
+                    ProgressView()
+                        .progressViewStyle(.linear)
+                        .tint(Theme.accent)
+                        .frame(width: 320)
+                }
+
+                HStack(spacing: 26) {
+                    Button { controller.castSeek(to: status.currentTime - 10) } label: {
+                        Image(systemName: "gobackward.10").font(.system(size: 22))
+                    }
+                    Button { controller.castTogglePlay() } label: {
+                        Image(systemName: status.state == .playing ? "pause.circle.fill" : "play.circle.fill")
+                            .font(.system(size: 46))
+                            .foregroundStyle(.white, Theme.accent)
+                    }
+                    Button { controller.castSeek(to: status.currentTime + 10) } label: {
+                        Image(systemName: "goforward.10").font(.system(size: 22))
+                    }
+                }
+                .buttonStyle(.plain)
+                .disabled(status.duration == nil)
+
+                HStack(spacing: 12) {
+                    if controller.hasNext {
+                        Button { controller.playNext() } label: {
+                            Label("Next Episode", systemImage: "forward.end.fill")
+                        }
+                        .buttonStyle(AccentButtonStyle(prominent: false))
+                    }
+                    Button("Stop Casting") { controller.stopCasting() }
+                        .buttonStyle(AccentButtonStyle(prominent: false))
+                }
+                .padding(.top, 4)
+
+                if let s = controller.stats {
+                    Text("\(formatRate(s.downloadRate)) · \(s.connectedPeers) peers · \(formatSize(s.bufferedAhead)) buffered")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.tertiary)
+                }
+            }
+            .padding(40)
+        }
+    }
+
+    private func heading(_ state: CastStatus.State, _ name: String) -> String {
+        switch state {
+        case .connecting: return "Connecting to \(name)"
+        case .loading, .idle: return "Starting on \(name)"
+        case .buffering: return "Buffering on \(name)"
+        case .paused: return "Paused on \(name)"
+        case .finished: return "Finished on \(name)"
+        case .playing, .ended, .failed: return "Playing on \(name)"
+        }
     }
 }

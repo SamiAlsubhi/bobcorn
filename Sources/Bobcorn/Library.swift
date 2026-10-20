@@ -1,7 +1,20 @@
 import Foundation
 import Observation
 
-/// Favorites, watch history and resume positions, kept in Application Support.
+/// A source's movie or show as My List keeps it: enough to show its poster
+/// and open its page again.
+struct SavedTitle: Codable, Hashable, Identifiable {
+    /// The IMDb ID.
+    let id: String
+    let type: APIMediaType
+    let title: String
+    let year: Int?
+    let poster: URL?
+    /// The API it came from.
+    let base: URL
+}
+
+/// My List, watch history and resume positions, kept in Application Support.
 @MainActor
 @Observable
 final class Library {
@@ -10,45 +23,48 @@ final class Library {
         var duration: Double
         var updated: Date
         var title: String
-        var item: CatalogItem?
+        var saved: SavedTitle?
 
         var fraction: Double { duration > 0 ? min(1, position / duration) : 0 }
     }
 
+    /// Each part optional, so a file from an older version still loads.
     private struct Stored: Codable {
-        var favorites: [CatalogItem] = []
-        var watched: [String] = []
-        var progress: [String: Progress] = [:]
+        var saved: [SavedTitle]?
+        var watched: [String]?
+        var progress: [String: Progress]?
     }
 
-    private(set) var favorites: [CatalogItem] = []
+    private(set) var saved: [SavedTitle] = []
     private(set) var watched: Set<String> = []
     private(set) var progress: [String: Progress] = [:]
     private var saveTask: Task<Void, Never>?
+    private let fileURL: URL
 
-    private let fileURL: URL = {
+    nonisolated static let defaultURL: URL = {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent(Bundle.main.bundleIdentifier?.hasSuffix(".debug") == true ? "Bobcorn Debug" : "Bobcorn", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("library.json")
     }()
 
-    init() {
+    init(fileURL: URL = Library.defaultURL) {
+        self.fileURL = fileURL
         if let data = try? Data(contentsOf: fileURL),
            let stored = try? JSONDecoder().decode(Stored.self, from: data) {
-            favorites = stored.favorites
-            watched = Set(stored.watched)
-            progress = stored.progress
+            saved = stored.saved ?? []
+            watched = Set(stored.watched ?? [])
+            progress = stored.progress ?? [:]
         }
     }
 
-    func isFavorite(_ id: String) -> Bool { favorites.contains { $0.id == id } }
+    func isSaved(_ id: String) -> Bool { saved.contains { $0.id == id } }
 
-    func toggleFavorite(_ item: CatalogItem) {
-        if let i = favorites.firstIndex(where: { $0.id == item.id }) {
-            favorites.remove(at: i)
+    func toggleSaved(_ title: SavedTitle) {
+        if let i = saved.firstIndex(where: { $0.id == title.id }) {
+            saved.remove(at: i)
         } else {
-            favorites.insert(item, at: 0)
+            saved.insert(title, at: 0)
         }
         scheduleSave()
     }
@@ -67,21 +83,23 @@ final class Library {
         return p.position
     }
 
-    func record(_ key: String, position: Double, duration: Double, title: String, item: CatalogItem?) {
+    func record(_ key: String, position: Double, duration: Double, title: String, saved: SavedTitle?) {
         guard duration > 0, position.isFinite, duration.isFinite else { return }
         if position / duration > 0.92 {
             watched.insert(key)
-            if let item { watched.insert(item.id) }
             progress[key] = nil
         } else if position > 30 {
-            progress[key] = Progress(position: position, duration: duration, updated: Date(), title: title, item: item)
+            progress[key] = Progress(position: position, duration: duration, updated: Date(), title: title, saved: saved)
         }
         scheduleSave()
     }
 
+    /// Titles left part-way, latest first; a show once, for its latest episode.
     var continueWatching: [(key: String, progress: Progress)] {
-        progress.filter { $0.value.item != nil }
+        var seen = Set<String>()
+        return progress.filter { $0.value.saved != nil }
             .sorted { $0.value.updated > $1.value.updated }
+            .filter { seen.insert($0.value.saved!.id).inserted }
             .map { ($0.key, $0.value) }
     }
 
@@ -95,7 +113,7 @@ final class Library {
     }
 
     func saveNow() {
-        let stored = Stored(favorites: favorites, watched: Array(watched), progress: progress)
+        let stored = Stored(saved: saved, watched: Array(watched), progress: progress)
         if let data = try? JSONEncoder().encode(stored) {
             try? data.write(to: fileURL, options: .atomic)
         }
@@ -104,19 +122,18 @@ final class Library {
 
 /// User defaults keys and their defaults.
 enum Pref {
-    static let streamMode = "streamMode" // "torrent" or "direct"
-    static let dataSaver = "dataSaver"
     static let subtitleSize = "subtitleSize"
     static let maxPeers = "maxPeers"
     static let enableDHT = "enableDHT"
     static let publicTrackers = "publicTrackers"
     static let clearCacheOnQuit = "clearCacheOnQuit"
     static let autoplayNext = "autoplayNext"
+    static let omdbKey = "omdbKey"
+    /// A folder the user picked for downloads; empty for the default.
+    static let cacheFolder = "cacheFolder"
 
     static func register() {
         UserDefaults.standard.register(defaults: [
-            streamMode: "torrent",
-            dataSaver: false,
             subtitleSize: 26.0,
             maxPeers: 60,
             enableDHT: true,
@@ -126,7 +143,5 @@ enum Pref {
         ])
     }
 
-    static var prefersTorrent: Bool { UserDefaults.standard.string(forKey: streamMode) != "direct" }
-    static var dataSaverOn: Bool { UserDefaults.standard.bool(forKey: dataSaver) }
     static var autoplay: Bool { UserDefaults.standard.bool(forKey: autoplayNext) }
 }

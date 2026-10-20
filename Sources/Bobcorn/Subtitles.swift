@@ -8,7 +8,6 @@ struct SubtitleCue {
 
 struct SubtitleTrack: Identifiable, Hashable {
     enum Source: Hashable {
-        case remote([URL])
         case torrent(fileIndex: Int)
         case local(URL)
     }

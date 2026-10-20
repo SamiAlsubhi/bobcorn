@@ -4,13 +4,14 @@ import SwiftUI
 struct SourcesSettings: View {
     @Environment(AppModel.self) private var model
     @State private var editing: CustomSource?
+    @AppStorage(Pref.omdbKey) private var omdbKey = ""
 
     var body: some View {
         let store = model.sources
         Form {
             Section {
                 if store.sources.isEmpty {
-                    Text("No sources yet. Bobcorn's own catalog is always available.")
+                    Text("No sources yet. Add one to browse its movies and TV shows.")
                         .foregroundStyle(.secondary)
                 }
                 ForEach(store.sources) { source in
@@ -61,13 +62,30 @@ struct SourcesSettings: View {
             } header: {
                 Text("Sources")
             } footer: {
-                Text("A source is an RSS or Atom feed that lists torrents as magnet links or .torrent files, or a catalog API that serves movies and shows as JSON. Enabled sources appear under Sources in the top bar. Only add sources you have the right to download from.")
+                Text("A source is an RSS or Atom feed that lists torrents as magnet links or .torrent files, or a catalog API that serves movies and shows as JSON. The source picked in the top bar fills the Movies and TV Shows tabs. Only add sources you have the right to download from.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             HStack {
                 Spacer()
-                Button("Add Source…") { editing = CustomSource(name: "", feedURL: "") }
+                Button("Add Source…") { editing = CustomSource(kind: .api, name: "", feedURL: "") }
+            }
+
+            Section {
+                TextField("OMDb API key", text: $omdbKey, prompt: Text("Optional"))
+                    .onChange(of: omdbKey) { model.ratings.keyChanged() }
+                if let error = model.ratings.lastError, !omdbKey.isEmpty {
+                    Text(error).font(.caption).foregroundStyle(.orange)
+                }
+            } header: {
+                Text("Rotten Tomatoes")
+            } footer: {
+                HStack(spacing: 4) {
+                    Text("Tomatometer scores come from OMDb, which needs a free key.")
+                    Link("Get one at omdbapi.com", destination: URL(string: "https://www.omdbapi.com/apikey.aspx")!)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -80,7 +98,7 @@ struct SourcesSettings: View {
     }
 }
 
-private struct SourceEditor: View {
+struct SourceEditor: View {
     @Environment(\.dismiss) private var dismiss
     @State var source: CustomSource
     let onSave: (CustomSource) -> Void
