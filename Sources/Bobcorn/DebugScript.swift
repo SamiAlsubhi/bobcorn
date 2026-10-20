@@ -12,7 +12,7 @@ import TorrentKit
 ///
 /// Steps: wait:<s>  shot:<name>  section:<movies|shows|myList>  search:<text>
 /// back  magnet:<uri>  torrentfile:<path>  playlargest  seek:<seconds>  state
-/// lanurl:<host>  subtitlesearch  settingsshot:<name>  close  quit
+/// lanurl:<host>  subtitlesearch  settingsshot:<name>[|sources]  close  quit
 /// Sources: addsource:<name>|<feed>[|<search>]  addapi:<name>|<base url>
 /// clearsources  feeddetail:<index>  feedplay  apisort:<sort>
 /// apidetail:<index>  apiplay[:<episode index>]
@@ -194,15 +194,18 @@ enum DebugScript {
         case "subtitlesearch":
             model.playback?.subtitleSearchVisible = true
         case "settingsshot":
-            // Settings → Sources in a window of its own: the Settings scene
-            // only opens from a menu or a SettingsLink.
+            // settingsshot:<name>[|sources]: Settings in a window of its own,
+            // as the Settings scene only opens from a menu or a SettingsLink.
+            let parts = arg.components(separatedBy: "|")
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 430), styleMask: [.titled], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
-            window.contentView = NSHostingView(rootView: SourcesSettings().environment(model).frame(width: 560, height: 430))
+            window.contentView = parts.last == "sources"
+                ? NSHostingView(rootView: AnyView(SourcesSettings().environment(model).frame(width: 560, height: 430)))
+                : NSHostingView(rootView: AnyView(SettingsView().environment(model)))
             window.center()
             window.orderFront(nil)
             try? await Task.sleep(nanoseconds: 1_000_000_000)
-            let url = out.appendingPathComponent("\(arg).png")
+            let url = out.appendingPathComponent("\(parts[0]).png")
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
             p.arguments = ["-x", "-o", "-l", String(window.windowNumber), url.path]

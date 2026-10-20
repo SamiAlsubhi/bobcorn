@@ -86,6 +86,9 @@ final class PlaybackController {
     private var cast: CastSession?
     /// This Mac's address on the Chromecast's network, once connected.
     private var castAddress: String?
+    /// The subtitle tracks handed to the Chromecast with the video, by their
+    /// IDs there: it switches between these without reloading.
+    private var castTrackIDs: [String: Int] = [:]
 
     private weak var app: AppModel?
     private var session: TorrentSession?
@@ -180,9 +183,12 @@ final class PlaybackController {
         statusText = "Preparing"
         cues = []
         torrentSubtitles = []
-        downloadedSubtitles = []
         cueText = nil
         activeSubtitleID = nil
+        // Subtitles downloaded for this video before, the last one showing.
+        let picked = OpenSubtitles.picked(for: current.key)
+        downloadedSubtitles = picked.downloads.compactMap(OpenSubtitles.track)
+        if let showing = picked.showing { selectSubtitle(OpenSubtitles.trackID(showing)) }
         pendingSeek = app?.library.resumePosition(current.key)
         prepareTask = Task { [weak self] in await self?.prepare() }
     }
@@ -434,6 +440,7 @@ final class PlaybackController {
     // MARK: - Controls
 
     func togglePlay() {
+        if cast != nil { return castTogglePlay() }
         guard let player else { return }
         if player.timeControlStatus == .paused { player.play() } else { player.pause() }
     }
@@ -441,6 +448,7 @@ final class PlaybackController {
     func seek(to seconds: Double) {
         let target = max(0, duration > 0 ? min(seconds, duration - 1) : seconds)
         currentTime = target
+        if cast != nil { return castSeek(to: target) }
         player?.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
     }
 
@@ -525,14 +533,19 @@ final class PlaybackController {
         cast?.seek(to: seconds)
     }
 
-    /// Hands the device a URL it can reach for the stream this Mac serves.
+    /// Hands the device a URL it can reach for the stream this Mac serves,
+    /// and the subtitles.
     private func castLoad(_ url: URL) {
         guard let cast, let address = castAddress, let app else { return }
         let start = pendingSeek ?? 0
         pendingSeek = nil
         let media = { (lan: URL) in
-            CastMedia(url: lan, contentType: Self.castContentType(url), title: self.displayTitle,
-                      subtitle: self.displaySubtitle, imageURL: self.request.artwork, startTime: start)
+            var m = CastMedia(url: lan, contentType: Self.castContentType(url), title: self.displayTitle,
+                              subtitle: self.displaySubtitle, imageURL: self.request.artwork, startTime: start)
+            m.textTracks = self.castTextTracks(host: address)
+            m.activeTextTrack = self.activeSubtitleID.flatMap { self.castTrackIDs[$0] }
+            m.textScale = UserDefaults.standard.double(forKey: Pref.subtitleSize) / 26
+            return m
         }
         Task {
             do {
@@ -549,6 +562,38 @@ final class PlaybackController {
         }
     }
 
+    /// Serves this item's subtitles to the device as WebVTT, and notes the
+    /// ID each has there.
+    private func castTextTracks(host: String) -> [CastTextTrack] {
+        castTrackIDs = [:]
+        let tracks = subtitleTracks
+        guard let app, let session, !tracks.isEmpty else { return [] }
+        let byFile = Dictionary(uniqueKeysWithValues: tracks.enumerated().map { ("\($0.offset + 1).vtt", $0.element) })
+        let first = app.engine.server.url(for: session, generated: "subtitles", name: "1.vtt") { path in
+            guard let track = byFile[(path as NSString).lastPathComponent] else { return nil }
+            let cues = SubtitleParser.parse(try await Self.data(of: track, in: session))
+            return ("text/vtt", Data(SubtitleParser.webVTT(cues).utf8))
+        }
+        return tracks.enumerated().compactMap { i, track in
+            let local = first.deletingLastPathComponent().appendingPathComponent("\(i + 1).vtt")
+            guard let lan = app.engine.server.lanURL(for: local, host: host) else { return nil }
+            castTrackIDs[track.id] = i + 1
+            return CastTextTrack(id: i + 1, url: lan, name: track.label, language: track.language.map(OpenSubtitles.languageTag) ?? "und")
+        }
+    }
+
+    /// The picked subtitles on the device: a track it was handed switches
+    /// there, and a new one reloads the video where it is.
+    private func castShowSubtitle(_ id: String?) {
+        guard let cast, castAddress != nil, let url = streamURL else { return }
+        if let id, castTrackIDs[id] == nil {
+            if let position = castStatus?.currentTime, position > 1 { pendingSeek = position }
+            castLoad(url)
+        } else {
+            cast.showTextTrack(id.flatMap { castTrackIDs[$0] })
+        }
+    }
+
     static func castContentType(_ url: URL) -> String {
         switch url.pathExtension.lowercased() {
         case "m3u8": return "application/x-mpegurl"
@@ -560,6 +605,9 @@ final class PlaybackController {
     private func castStatusChanged(_ status: CastStatus, from session: CastSession) {
         guard session === cast else { return }
         castStatus = status
+        // The seek bar and what's buffered follow the device.
+        currentTime = status.currentTime
+        if let d = status.duration { duration = d }
         switch status.state {
         case .connecting, .loading:
             if !hasStarted { statusText = "Starting on \(castDevice?.name ?? "the Chromecast")" }
@@ -591,6 +639,7 @@ final class PlaybackController {
         castDevice = nil
         castStatus = nil
         castAddress = nil
+        castTrackIDs = [:]
         if let message { show(message) }
         guard resumeHere, !stopped else { return }
         if let p = player, p.currentItem != nil {
@@ -606,20 +655,15 @@ final class PlaybackController {
 
     func selectSubtitle(_ id: String?) {
         activeSubtitleID = id
+        rememberShowing(id)
         cues = []
         cueText = nil
+        castShowSubtitle(id)
         guard let id, let track = subtitleTracks.first(where: { $0.id == id }) else { return }
         let session = self.session
         Task { [weak self] in
             do {
-                let data: Data
-                switch track.source {
-                case .local(let url): data = try Data(contentsOf: url)
-                case .torrent(let fileIndex):
-                    guard let session else { throw TorrentError.noSuchFile }
-                    data = try await session.readFile(fileIndex: fileIndex)
-                }
-                let parsed = SubtitleParser.parse(data)
+                let parsed = SubtitleParser.parse(try await Self.data(of: track, in: session))
                 guard let self, self.activeSubtitleID == id else { return }
                 self.cues = parsed
                 if parsed.isEmpty { self.show("No subtitles found in \(track.label)") }
@@ -673,13 +717,35 @@ final class PlaybackController {
     }
 
     /// Shows a subtitle downloaded from OpenSubtitles, and keeps it in the
-    /// menu for this item.
+    /// menu for this video, now and when it plays again.
     func useDownloadedSubtitle(_ subtitle: OpenSubtitles.Subtitle, at url: URL) {
-        let track = SubtitleTrack(id: "os:\(subtitle.fileID)",
-                                  label: "\(OpenSubtitles.languageName(subtitle.language)) · \(subtitle.release)",
-                                  source: .local(url))
+        var picked = OpenSubtitles.picked(for: current.key)
+        let download = OpenSubtitles.Picked.Download(fileID: subtitle.fileID, label: OpenSubtitles.label(subtitle), language: subtitle.language)
+        if !picked.downloads.contains(download) { picked.downloads.append(download) }
+        OpenSubtitles.remember(picked, for: current.key)
+        let track = SubtitleTrack(id: OpenSubtitles.trackID(subtitle.fileID), label: download.label, source: .local(url),
+                                  language: subtitle.language)
         if !downloadedSubtitles.contains(track) { downloadedSubtitles.append(track) }
         selectSubtitle(track.id)
+    }
+
+    /// Notes whether a downloaded subtitle is showing, for when this video
+    /// plays again.
+    private func rememberShowing(_ id: String?) {
+        var picked = OpenSubtitles.picked(for: current.key)
+        guard !picked.downloads.isEmpty else { return }
+        picked.showing = picked.downloads.first { OpenSubtitles.trackID($0.fileID) == id }?.fileID
+        OpenSubtitles.remember(picked, for: current.key)
+    }
+
+    /// A subtitle track's file, from disk or out of the torrent.
+    nonisolated private static func data(of track: SubtitleTrack, in session: TorrentSession?) async throws -> Data {
+        switch track.source {
+        case .local(let url): return try Data(contentsOf: url)
+        case .torrent(let fileIndex):
+            guard let session else { throw TorrentError.noSuchFile }
+            return try await session.readFile(fileIndex: fileIndex)
+        }
     }
 
     func chooseSubtitleFile() {

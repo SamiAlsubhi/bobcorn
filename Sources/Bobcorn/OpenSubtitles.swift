@@ -5,7 +5,8 @@ import Foundation
 /// video's file name, and by the file's hash once it's worked out: subtitles
 /// uploaded for that very release come first, since they're timed to it.
 /// Searching is free; a free key downloads 5 subtitles a day per IP address,
-/// so downloads are kept on disk and picking one again costs nothing.
+/// so downloads are kept in the cache folder, and picking one again costs
+/// nothing. Each video remembers its downloads, and the one it showed.
 enum OpenSubtitles {
     static let api = URL(string: "https://api.opensubtitles.com/api/v1/")!
     /// Where a key is made: the API consumers page of an OpenSubtitles profile.
@@ -24,8 +25,10 @@ enum OpenSubtitles {
         return URLSession(configuration: c)
     }()
 
-    private static let cacheDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("Bobcorn/Subtitles", isDirectory: true)
+    /// In the cache folder, so they move and clear with the downloads.
+    private static var cacheDirectory: URL {
+        AppModel.cacheDirectory.appendingPathComponent("Subtitles", isDirectory: true)
+    }
 
     // MARK: - Searching
 
@@ -155,6 +158,53 @@ enum OpenSubtitles {
 
     private static func cacheFile(_ fileID: Int) -> URL {
         cacheDirectory.appendingPathComponent("\(fileID).srt")
+    }
+
+    // MARK: - Remembered
+
+    /// A video's downloaded subtitles, and the one it showed last.
+    struct Picked: Codable, Equatable {
+        struct Download: Codable, Equatable {
+            let fileID: Int
+            let label: String
+            let language: String
+        }
+
+        var downloads: [Download] = []
+        var showing: Int?
+    }
+
+    private static var pickedFile: URL { cacheDirectory.appendingPathComponent("picked.json") }
+
+    /// By the video's library key.
+    static func picked(for key: String) -> Picked {
+        allPicked()[key] ?? Picked()
+    }
+
+    static func remember(_ picked: Picked, for key: String) {
+        var all = allPicked()
+        guard all[key] != picked else { return }
+        all[key] = picked.downloads.isEmpty ? nil : picked
+        try? FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+        if let data = try? JSONEncoder().encode(all) { try? data.write(to: pickedFile, options: .atomic) }
+    }
+
+    private static func allPicked() -> [String: Picked] {
+        guard let data = try? Data(contentsOf: pickedFile) else { return [:] }
+        return (try? JSONDecoder().decode([String: Picked].self, from: data)) ?? [:]
+    }
+
+    /// The menu's track for a download, while its file is still in the cache.
+    static func track(_ download: Picked.Download) -> SubtitleTrack? {
+        let url = cacheFile(download.fileID)
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return SubtitleTrack(id: trackID(download.fileID), label: download.label, source: .local(url), language: download.language)
+    }
+
+    static func trackID(_ fileID: Int) -> String { "os:\(fileID)" }
+
+    static func label(_ subtitle: Subtitle) -> String {
+        "\(languageName(subtitle.language)) · \(subtitle.release)"
     }
 
     // MARK: - Requests
@@ -296,26 +346,9 @@ enum OpenSubtitles {
         languages.first { $0.code == code.lowercased() }?.name ?? code
     }
 
-    /// The language picked last, or else the Mac's own.
-    static var preferredLanguage: String {
-        if let saved = UserDefaults.standard.string(forKey: Pref.subtitleLanguage),
-           languages.contains(where: { $0.code == saved }) {
-            return saved
-        }
-        return Locale.preferredLanguages.lazy.compactMap(code(forLocale:)).first ?? "en"
-    }
-
-    /// "pt-BR" → "pt-br", "zh-Hant-TW" → "zh-tw", "en-US" → "en".
-    static func code(forLocale identifier: String) -> String? {
-        let locale = Locale(identifier: identifier)
-        guard let language = locale.language.languageCode?.identifier else { return nil }
-        let region = locale.region?.identifier
-        let code: String
-        switch language {
-        case "pt": code = region == "BR" ? "pt-br" : "pt-pt"
-        case "zh": code = locale.language.script?.identifier == "Hant" || ["TW", "HK", "MO"].contains(region ?? "") ? "zh-tw" : "zh-cn"
-        default: code = language
-        }
-        return languages.contains { $0.code == code } ? code : nil
+    /// As an RFC 5646 tag, for a Chromecast: "pt-br" → "pt-BR".
+    static func languageTag(_ code: String) -> String {
+        let parts = code.split(separator: "-")
+        return parts.count == 2 ? "\(parts[0])-\(parts[1].uppercased())" : code
     }
 }

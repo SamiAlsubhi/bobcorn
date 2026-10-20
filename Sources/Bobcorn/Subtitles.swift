@@ -15,6 +15,8 @@ struct SubtitleTrack: Identifiable, Hashable {
     let id: String
     let label: String
     let source: Source
+    /// OpenSubtitles' code, when known.
+    var language: String?
 }
 
 /// SubRip (.srt) and WebVTT (.vtt), which are close enough to share a parser.
@@ -54,6 +56,25 @@ enum SubtitleParser {
             total = total * 60 + v
         }
         return total
+    }
+
+    /// Cues as WebVTT, the format Chromecasts show.
+    static func webVTT(_ cues: [SubtitleCue]) -> String {
+        var out = "WEBVTT\n"
+        for cue in cues {
+            let text = cue.text
+                .replacingOccurrences(of: "&", with: "&amp;")
+                .replacingOccurrences(of: "<", with: "&lt;")
+                .replacingOccurrences(of: "-->", with: "->")
+            out += "\n\(vttTime(cue.start)) --> \(vttTime(cue.end))\n\(text)\n"
+        }
+        return out
+    }
+
+    /// "01:02:03.456".
+    static func vttTime(_ seconds: Double) -> String {
+        let ms = Int((max(0, seconds) * 1000).rounded())
+        return String(format: "%02d:%02d:%02d.%03d", ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, ms % 1000)
     }
 
     /// The cue showing at `time`, if any.

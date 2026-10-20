@@ -126,11 +126,16 @@ final class CastSessionTests: XCTestCase {
 
         let address = try await session.connect()
         XCTAssertEqual(address, "127.0.0.1")
+        let subtitles = [CastTextTrack(id: 1, url: URL(string: "http://127.0.0.1:9/s/subs/1.vtt")!, name: "English"),
+                         CastTextTrack(id: 2, url: URL(string: "http://127.0.0.1:9/s/subs/2.vtt")!, name: "French", language: "fr")]
         session.load(CastMedia(url: URL(string: "http://127.0.0.1:9/s/t/index.m3u8")!, contentType: "application/x-mpegurl",
-                               title: "Film", imageURL: URL(string: "https://img.example/p.jpg"), startTime: 42))
+                               title: "Film", imageURL: URL(string: "https://img.example/p.jpg"), startTime: 42,
+                               textTracks: subtitles, activeTextTrack: 2, textScale: 1.5))
         await fulfillment(of: [playing], timeout: 5)
         XCTAssertEqual(states.last?.currentTime, 42)
         XCTAssertEqual(states.last?.duration, 100)
+        session.showTextTrack(1)
+        session.showTextTrack(nil)
 
         session.seek(to: 99)
         await fulfillment(of: [finished], timeout: 5)
@@ -145,6 +150,18 @@ final class CastSessionTests: XCTestCase {
         let media = try XCTUnwrap(load.json?["media"] as? [String: Any])
         XCTAssertEqual(media["contentId"] as? String, "http://127.0.0.1:9/s/t/index.m3u8")
         XCTAssertEqual(media["hlsSegmentFormat"] as? String, "fmp4")
+        let tracks = try XCTUnwrap(media["tracks"] as? [[String: Any]])
+        XCTAssertEqual(tracks.map { $0["trackId"] as? Int }, [1, 2])
+        XCTAssertEqual(tracks[1]["trackContentId"] as? String, "http://127.0.0.1:9/s/subs/2.vtt")
+        XCTAssertEqual(tracks[1]["trackContentType"] as? String, "text/vtt")
+        XCTAssertEqual(tracks[1]["type"] as? String, "TEXT")
+        XCTAssertEqual(tracks[1]["name"] as? String, "French")
+        XCTAssertEqual(tracks.map { $0["language"] as? String }, ["und", "fr"])
+        XCTAssertEqual((media["textTrackStyle"] as? [String: Any])?["fontScale"] as? Double, 1.5)
+        XCTAssertEqual(load.json?["activeTrackIds"] as? [Int], [2])
+        let edits = sent.filter { $0.type == "EDIT_TRACKS_INFO" }
+        XCTAssertEqual(edits.map { $0.json?["activeTrackIds"] as? [Int] }, [[1], []])
+        XCTAssertEqual(edits.first?.json?["mediaSessionId"] as? Int, 7)
         XCTAssertEqual(sent.first { $0.type == "SEEK" }?.json?["mediaSessionId"] as? Int, 7)
         XCTAssertEqual(sent.last { $0.type == "STOP" }?.json?["sessionId"] as? String, "web-5")
     }

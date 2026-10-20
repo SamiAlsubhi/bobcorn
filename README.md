@@ -94,18 +94,21 @@ build signed with the old key first.
   part-way.
 - **Chromecast**: the player's TV menu lists the Chromecasts and Google TVs
   on the network. Casting hands the device a stream from this Mac, remuxed MKV
-  included; the next episode follows, resume positions are kept, and stopping
-  carries on here where the TV left off. Other devices only reach the streams
+  included, and the subtitle picked in the player, which shows on the TV; the
+  seek bar shows what's downloaded, as it does here. The next episode follows,
+  resume positions are kept, and stopping carries on here where the TV left
+  off. Other devices only reach the streams
   Bobcorn hands out: each address carries a random secret.
 - **Player**: AVKit with picture-in-picture and full screen. It resumes where
   you stopped, auto-plays the next episode, and shows `.srt`/`.vtt` subtitles
   from the torrent, a local file or OpenSubtitles.
 - **OpenSubtitles**: with an API key set in Settings → Sources, the player's
-  subtitles menu searches OpenSubtitles in the language you pick, by the
-  title's IMDb ID (or the file's name) and by the file's hash, so subtitles
-  timed to that very release come first. Picking one downloads it; downloads
-  are kept on disk, so picking one again doesn't count against the key's
-  daily quota (5 on a free key).
+  subtitles menu searches OpenSubtitles in the language set in Settings →
+  Playback (Arabic unless you pick another), by the title's IMDb ID (or the
+  file's name) and by the file's hash, so subtitles timed to that very release
+  come first. Picking one downloads it into the cache folder, so picking it
+  again doesn't count against the key's daily quota (5 on a free key), and
+  the film or episode keeps it: it's in the menu, and on, when it plays again.
 - **Any torrent** (⇧⌘O, ⌘O, drag and drop): shows each video's seeds and
   peers, best-seeded first.
 - **MKV** plays in Bobcorn's own player. It's repackaged on the fly, while it
@@ -141,6 +144,7 @@ player asks for it. A file without an index is cut at byte offsets instead.
 
 Downloads go to one sparse file per torrent in `~/Library/Caches/Bobcorn`, so
 watching one film out of a 40 GB torrent uses about that film's size on disk.
+Subtitles downloaded from OpenSubtitles go in a `Subtitles` folder there.
 Settings → Cache shows its size, clears it, and moves it to another folder or
 drive, taking what's downloaded along.
 

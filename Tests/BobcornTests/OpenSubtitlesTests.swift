@@ -117,14 +117,20 @@ final class OpenSubtitlesTests: XCTestCase {
 
     // MARK: - Languages
 
-    func testLanguageFromTheMac() {
-        XCTAssertEqual(OpenSubtitles.code(forLocale: "en-US"), "en")
-        XCTAssertEqual(OpenSubtitles.code(forLocale: "ar-SA"), "ar")
-        XCTAssertEqual(OpenSubtitles.code(forLocale: "pt-BR"), "pt-br")
-        XCTAssertEqual(OpenSubtitles.code(forLocale: "pt-PT"), "pt-pt")
-        XCTAssertEqual(OpenSubtitles.code(forLocale: "zh-Hans-CN"), "zh-cn")
-        XCTAssertEqual(OpenSubtitles.code(forLocale: "zh-Hant-TW"), "zh-tw")
-        XCTAssertNil(OpenSubtitles.code(forLocale: "xx"))
+    func testLanguageNames() {
+        XCTAssertEqual(OpenSubtitles.languageName("ar"), "Arabic")
         XCTAssertEqual(OpenSubtitles.languageName("PT-BR"), "Portuguese (Brazilian)")
+        XCTAssertEqual(OpenSubtitles.languageName("xx"), "xx")
+        XCTAssertEqual(OpenSubtitles.languageTag("pt-br"), "pt-BR")
+        XCTAssertEqual(OpenSubtitles.languageTag("ar"), "ar")
+    }
+
+    // MARK: - WebVTT for Chromecasts
+
+    func testConvertsCuesToWebVTT() {
+        let srt = "1\r\n00:00:01,500 --> 00:00:03,000\r\n<i>Tom & Jerry</i>\r\n\r\n2\r\n01:02:03,456 --> 01:02:05,000\r\nA < B\r\nline two\r\n"
+        let vtt = SubtitleParser.webVTT(SubtitleParser.parse(Data(srt.utf8)))
+        XCTAssertEqual(vtt, "WEBVTT\n\n00:00:01.500 --> 00:00:03.000\nTom &amp; Jerry\n\n01:02:03.456 --> 01:02:05.000\nA &lt; B\nline two\n")
+        XCTAssertEqual(SubtitleParser.parse(Data(vtt.utf8)).count, 2, "reads back")
     }
 }

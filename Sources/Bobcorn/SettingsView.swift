@@ -4,6 +4,7 @@ import TorrentKit
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @AppStorage(Pref.subtitleSize) private var subtitleSize = 26.0
+    @AppStorage(Pref.subtitleLanguage) private var subtitleLanguage = "ar"
     @AppStorage(Pref.autoplayNext) private var autoplayNext = true
     @AppStorage(Pref.maxPeers) private var maxPeers = 60
     @AppStorage(Pref.enableDHT) private var enableDHT = true
@@ -25,6 +26,11 @@ struct SettingsView: View {
                         Text("\(Int(subtitleSize)) pt").monospacedDigit().frame(width: 44, alignment: .trailing)
                     }
                 }
+
+                Picker("Subtitle language", selection: $subtitleLanguage) {
+                    ForEach(OpenSubtitles.languages, id: \.code) { Text($0.name).tag($0.code) }
+                }
+                .help("The language OpenSubtitles is searched in")
 
                 LabeledContent("External players") {
                     let installed = ExternalPlayer.installed

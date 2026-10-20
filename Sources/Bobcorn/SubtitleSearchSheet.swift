@@ -5,7 +5,7 @@ import SwiftUI
 struct SubtitleSearchSheet: View {
     @Environment(\.dismiss) private var dismiss
     let controller: PlaybackController
-    @State private var language = OpenSubtitles.preferredLanguage
+    @AppStorage(Pref.subtitleLanguage) private var language = "ar"
     @State private var phase = Phase.matching
     @State private var results: [OpenSubtitles.Subtitle] = []
     @State private var attempt = 0
@@ -131,6 +131,7 @@ struct SubtitleSearchSheet: View {
             }
             .padding(.vertical, 3)
             .contentShape(Rectangle())
+            .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
         }
         .buttonStyle(.plain)
         .disabled(downloading != nil)
@@ -143,7 +144,6 @@ struct SubtitleSearchSheet: View {
     }
 
     private func search() async {
-        UserDefaults.standard.set(language, forKey: Pref.subtitleLanguage)
         results = []
         guard var query = controller.subtitleSearch else { return }
         guard !OpenSubtitles.apiKey.isEmpty else {

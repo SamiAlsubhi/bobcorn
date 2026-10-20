@@ -21,7 +21,7 @@ struct PlayerScreen: View {
                     .onTapGesture(count: 2) { NSApp.keyWindow?.toggleFullScreen(nil) }
             }
 
-            if let text = controller.cueText {
+            if let text = controller.cueText, !controller.isCasting {
                 VStack {
                     Spacer()
                     Text(text)
@@ -287,7 +287,7 @@ private struct ControlBar: View {
                     .font(.system(size: 12, weight: .medium, design: .monospaced))
                     .foregroundStyle(Theme.secondary)
                 Spacer()
-                bufferLabel
+                DownloadLabel(controller: controller)
                 HStack(spacing: 6) {
                     Button { controller.volume = controller.volume > 0 ? 0 : 1 } label: {
                         Image(systemName: controller.volume == 0 ? "speaker.slash.fill" : controller.volume < 0.5 ? "speaker.wave.1.fill" : "speaker.wave.2.fill")
@@ -322,8 +322,13 @@ private struct ControlBar: View {
                                            .init(color: .black.opacity(0.85), location: 1)], startPoint: .top, endPoint: .bottom))
     }
 
-    @ViewBuilder
-    private var bufferLabel: some View {
+}
+
+/// How much of the video is downloaded ahead of where it plays.
+private struct DownloadLabel: View {
+    let controller: PlaybackController
+
+    var body: some View {
         if controller.isFullyDownloaded {
             Label("Downloaded", systemImage: "checkmark.circle.fill")
                 .help("The whole video is on this Mac")
@@ -331,7 +336,6 @@ private struct ControlBar: View {
             Label(ahead >= 1 ? "\(formatTime(ahead)) buffered" : "Buffering", systemImage: "arrow.down.circle")
                 .help("Downloaded ahead of where you are\(controller.isPaused ? "; it keeps downloading while paused" : "")")
         }
-        EmptyView()
     }
 }
 
@@ -645,7 +649,6 @@ private struct CastMenu: View {
 /// While a Chromecast plays: what's on, and its controls.
 private struct CastPanel: View {
     let controller: PlaybackController
-    @State private var scrub: Double?
 
     var body: some View {
         let status = controller.castStatus ?? CastStatus()
@@ -673,20 +676,16 @@ private struct CastPanel: View {
                 }
                 .multilineTextAlignment(.center)
 
-                if let duration = status.duration, duration > 0 {
+                if controller.duration > 0 {
                     VStack(spacing: 6) {
-                        Slider(value: Binding(get: { min(duration, scrub ?? status.currentTime) }, set: { scrub = $0 }),
-                               in: 0...duration) { editing in
-                            if !editing, let target = scrub {
-                                controller.castSeek(to: target)
-                                scrub = nil
-                            }
-                        }
-                        .tint(Theme.accent)
+                        Scrubber(controller: controller)
                         HStack {
-                            Text(formatTime(scrub ?? status.currentTime))
+                            Text(formatTime(controller.currentTime))
                             Spacer()
-                            Text(formatTime(duration))
+                            DownloadLabel(controller: controller)
+                                .font(.system(size: 12, weight: .medium))
+                            Spacer()
+                            Text(formatTime(controller.duration))
                         }
                         .font(.system(size: 12, design: .monospaced))
                         .foregroundStyle(Theme.secondary)
@@ -700,15 +699,15 @@ private struct CastPanel: View {
                 }
 
                 HStack(spacing: 26) {
-                    Button { controller.castSeek(to: status.currentTime - 10) } label: {
+                    Button { controller.skip(-10) } label: {
                         Image(systemName: "gobackward.10").font(.system(size: 22))
                     }
-                    Button { controller.castTogglePlay() } label: {
+                    Button { controller.togglePlay() } label: {
                         Image(systemName: status.state == .playing ? "pause.circle.fill" : "play.circle.fill")
                             .font(.system(size: 46))
                             .foregroundStyle(.white, Theme.accent)
                     }
-                    Button { controller.castSeek(to: status.currentTime + 10) } label: {
+                    Button { controller.skip(10) } label: {
                         Image(systemName: "goforward.10").font(.system(size: 22))
                     }
                 }
@@ -728,7 +727,7 @@ private struct CastPanel: View {
                 .padding(.top, 4)
 
                 if let s = controller.stats {
-                    Text("\(formatRate(s.downloadRate)) · \(s.connectedPeers) peers · \(formatSize(s.bufferedAhead)) buffered")
+                    Text("\(formatRate(s.downloadRate)) · \(s.connectedPeers) peers")
                         .font(.system(size: 12))
                         .foregroundStyle(Theme.tertiary)
                 }

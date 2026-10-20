@@ -10,17 +10,49 @@ public struct CastMedia: Sendable {
     public var imageURL: URL?
     /// Seconds to start from.
     public var startTime: Double
+    /// Subtitles the device can switch between without reloading.
+    public var textTracks: [CastTextTrack]
+    /// The one of `textTracks` to show, if any.
+    public var activeTextTrack: Int?
+    /// Subtitle size, 1 being the device's own.
+    public var textScale: Double
 
-    public init(url: URL, contentType: String, title: String, subtitle: String? = nil, imageURL: URL? = nil, startTime: Double = 0) {
+    public init(url: URL, contentType: String, title: String, subtitle: String? = nil, imageURL: URL? = nil, startTime: Double = 0,
+                textTracks: [CastTextTrack] = [], activeTextTrack: Int? = nil, textScale: Double = 1) {
         self.url = url
         self.contentType = contentType
         self.title = title
         self.subtitle = subtitle
         self.imageURL = imageURL
         self.startTime = startTime
+        self.textTracks = textTracks
+        self.activeTextTrack = activeTextTrack
+        self.textScale = textScale
     }
 
     var isHLS: Bool { contentType.lowercased().contains("mpegurl") }
+}
+
+/// A WebVTT subtitle file the device fetches when it's shown.
+public struct CastTextTrack: Sendable, Equatable {
+    /// 1 or more, unique among the media's tracks.
+    public var id: Int
+    public var url: URL
+    public var name: String
+    /// An RFC 5646 tag, which subtitles must have: "und" when unknown.
+    public var language: String
+
+    public init(id: Int, url: URL, name: String, language: String = "und") {
+        self.id = id
+        self.url = url
+        self.name = name
+        self.language = language
+    }
+
+    var json: [String: Any] {
+        ["trackId": id, "type": "TEXT", "subtype": "SUBTITLES", "trackContentId": url.absoluteString,
+         "trackContentType": "text/vtt", "name": name, "language": language]
+    }
 }
 
 public struct CastStatus: Sendable, Equatable {
@@ -291,15 +323,31 @@ public final class CastSession: @unchecked Sendable {
                 info["hlsSegmentFormat"] = "fmp4"
                 info["hlsVideoSegmentFormat"] = "fmp4"
             }
-            send(CastMessage.Namespace.media, to: transportID, [
-                "type": "LOAD", "media": info, "autoplay": true, "currentTime": media.startTime,
-            ])
+            var load: [String: Any] = ["type": "LOAD", "autoplay": true, "currentTime": media.startTime]
+            if !media.textTracks.isEmpty {
+                info["tracks"] = media.textTracks.map(\.json)
+                info["textTrackStyle"] = Self.textStyle(scale: media.textScale)
+                load["activeTrackIds"] = media.activeTextTrack.map { [$0] } ?? []
+            }
+            load["media"] = info
+            send(CastMessage.Namespace.media, to: transportID, load)
             if !polling {
                 // The device reports changes, not progress: ask each second.
                 polling = true
                 every(1) { [weak self] in self?.media(["type": "GET_STATUS"]) }
             }
         }
+    }
+
+    /// Shows one of the media's text tracks, or none.
+    public func showTextTrack(_ id: Int?) {
+        queue.async { [self] in media(["type": "EDIT_TRACKS_INFO", "activeTrackIds": id.map { [$0] } ?? []]) }
+    }
+
+    /// White with a shadow and no box, as Bobcorn draws them.
+    static func textStyle(scale: Double) -> [String: Any] {
+        ["fontScale": scale, "foregroundColor": "#FFFFFFFF", "backgroundColor": "#00000000",
+         "edgeType": "DROP_SHADOW", "edgeColor": "#000000FF"]
     }
 
     public func play() { queue.async { [self] in media(["type": "PLAY"]) } }
