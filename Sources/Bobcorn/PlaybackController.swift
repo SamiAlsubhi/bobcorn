@@ -111,7 +111,10 @@ final class PlaybackController {
     var current: PlayableItem { request.items[index] }
     var hasNext: Bool { index + 1 < request.items.count }
     var hasPrevious: Bool { index > 0 }
-    var subtitleTracks: [SubtitleTrack] { current.subtitles + localSubtitles }
+    var subtitleTracks: [SubtitleTrack] { current.subtitles + torrentSubtitles + localSubtitles }
+    /// Subtitle files in the torrent of a title from a source, found once its
+    /// file list arrives.
+    private(set) var torrentSubtitles: [SubtitleTrack] = []
 
     var displayTitle: String {
         request.items.count > 1 && current.title != request.title ? current.title : request.title
@@ -166,6 +169,7 @@ final class PlaybackController {
         isBuffering = false
         statusText = "Preparing"
         cues = []
+        torrentSubtitles = []
         cueText = nil
         activeSubtitleID = nil
         pendingSeek = app?.library.resumePosition(current.key)
@@ -203,6 +207,9 @@ final class PlaybackController {
                 session = s
                 sessionIsOurs = true
                 let info = try await s.waitForMetadata()
+                torrentSubtitles = info.contentFiles.filter(\.isSubtitle)
+                    .sorted { $0.displayPath.localizedStandardCompare($1.displayPath) == .orderedAscending }
+                    .map { SubtitleTrack(id: "bt:\($0.index)", label: $0.name, source: .torrent(fileIndex: $0.index)) }
                 guard !Task.isCancelled else { return }
                 guard let file = Self.fileToPlay(in: info, season: season, episode: episode) else {
                     throw TorrentError.noSuchFile

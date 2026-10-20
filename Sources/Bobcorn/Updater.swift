@@ -50,14 +50,14 @@ final class Updater {
         #endif
     }
 
-    /// Checks now and every six hours.
+    /// Checks now and every hour.
     func start() {
         guard !started else { return }
         started = true
         Task {
             while !Task.isCancelled {
                 _ = try? await check()
-                try? await Task.sleep(nanoseconds: 6 * 3600 * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: 3600 * 1_000_000_000)
             }
         }
     }

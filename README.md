@@ -65,7 +65,7 @@ them), releases are also signed with the hardened runtime, notarized, and
 have the ticket stapled, so they open on any Mac without a warning. Without
 them, releases are signed ad hoc.
 
-Bobcorn checks for a newer release at launch and every six hours, and
+Bobcorn checks for a newer release at launch and every hour, and
 Bobcorn → Check for Updates… checks now. When there is one, an Update button
 appears in the top bar: it downloads the installer, refuses it unless the
 signature matches the public key in `Updater.swift`, swaps the app in place
