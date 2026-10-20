@@ -94,6 +94,9 @@ struct PlayerScreen: View {
         .onKeyPress(.leftArrow) { controller.skip(-10); poke(); return .handled }
         .onKeyPress(.rightArrow) { controller.skip(10); poke(); return .handled }
         .onKeyPress("f") { NSApp.keyWindow?.toggleFullScreen(nil); return .handled }
+        .sheet(isPresented: Bindable(controller).subtitleSearchVisible) {
+            SubtitleSearchSheet(controller: controller)
+        }
     }
 
     private var topBar: some View {
@@ -160,6 +163,8 @@ struct PlayerScreen: View {
                     }
                 }
                 Divider()
+                Button("Search OpenSubtitles…") { controller.subtitleSearchVisible = true }
+                    .disabled(controller.subtitleSearch == nil)
                 Button("Load from File…") { controller.chooseSubtitleFile() }
             } label: {
                 Image(systemName: controller.activeSubtitleID == nil ? "captions.bubble" : "captions.bubble.fill")

@@ -111,10 +111,20 @@ final class PlaybackController {
     var current: PlayableItem { request.items[index] }
     var hasNext: Bool { index + 1 < request.items.count }
     var hasPrevious: Bool { index > 0 }
-    var subtitleTracks: [SubtitleTrack] { current.subtitles + torrentSubtitles + localSubtitles }
+    var subtitleTracks: [SubtitleTrack] { current.subtitles + torrentSubtitles + downloadedSubtitles + localSubtitles }
     /// Subtitle files in the torrent of a title from a source, found once its
     /// file list arrives.
     private(set) var torrentSubtitles: [SubtitleTrack] = []
+    /// Subtitles picked from OpenSubtitles for this item.
+    private(set) var downloadedSubtitles: [SubtitleTrack] = []
+    var subtitleSearchVisible = false
+    private var hashState = FileHash.unknown
+
+    private enum FileHash {
+        case unknown
+        case working(Task<Void, Never>)
+        case done(String?)
+    }
 
     var displayTitle: String {
         request.items.count > 1 && current.title != request.title ? current.title : request.title
@@ -170,6 +180,7 @@ final class PlaybackController {
         statusText = "Preparing"
         cues = []
         torrentSubtitles = []
+        downloadedSubtitles = []
         cueText = nil
         activeSubtitleID = nil
         pendingSeek = app?.library.resumePosition(current.key)
@@ -618,6 +629,59 @@ final class PlaybackController {
         }
     }
 
+    /// What to ask OpenSubtitles for: the title's IMDb ID when its source
+    /// gives one, otherwise the video's file name. Nil until there's either.
+    var subtitleSearch: OpenSubtitles.Query? {
+        var q = OpenSubtitles.Query(fileName: currentFile.map { ($0.name as NSString).deletingPathExtension })
+        if let saved = request.saved {
+            switch (saved.type, current.media) {
+            case (.movies, _):
+                q.imdbID = saved.id
+            case (.shows, .link(_, let season?, let episode?)):
+                q.imdbID = saved.id
+                q.season = season
+                q.episode = episode
+            default:
+                break
+            }
+        }
+        return q.imdbID != nil || q.fileName != nil ? q : nil
+    }
+
+    /// The OpenSubtitles hash of the playing torrent file, if it can be had
+    /// within `seconds`. It needs the file's first and last 64 KB, which are
+    /// fetched first when they aren't here yet.
+    func fileHash(within seconds: Double) async -> String? {
+        if case .unknown = hashState, let s = session, let file = currentFile, OpenSubtitles.canHash(length: file.length) {
+            let source = TorrentByteSource(session: s, file: file)
+            let stream = UUID()
+            hashState = .working(Task { [weak self] in
+                let hash = try? await OpenSubtitles.hash(length: file.length) {
+                    try await source.read(at: $0, count: $1, stream: stream)
+                }
+                source.finish(stream: stream)
+                guard let self, !Task.isCancelled, self.session === s, self.currentFile == file else { return }
+                self.hashState = .done(hash)
+            })
+        }
+        let deadline = Date().addingTimeInterval(seconds)
+        while case .working = hashState, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        if case .done(let hash) = hashState { return hash }
+        return nil
+    }
+
+    /// Shows a subtitle downloaded from OpenSubtitles, and keeps it in the
+    /// menu for this item.
+    func useDownloadedSubtitle(_ subtitle: OpenSubtitles.Subtitle, at url: URL) {
+        let track = SubtitleTrack(id: "os:\(subtitle.fileID)",
+                                  label: "\(OpenSubtitles.languageName(subtitle.language)) · \(subtitle.release)",
+                                  source: .local(url))
+        if !downloadedSubtitles.contains(track) { downloadedSubtitles.append(track) }
+        selectSubtitle(track.id)
+    }
+
     func chooseSubtitleFile() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.init(filenameExtension: "srt"), .init(filenameExtension: "vtt")].compactMap { $0 }
@@ -692,5 +756,7 @@ final class PlaybackController {
         fileURL = nil
         remuxSummary = nil
         externalReason = nil
+        if case .working(let task) = hashState { task.cancel() }
+        hashState = .unknown
     }
 }

@@ -99,7 +99,13 @@ build signed with the old key first.
   Bobcorn hands out: each address carries a random secret.
 - **Player**: AVKit with picture-in-picture and full screen. It resumes where
   you stopped, auto-plays the next episode, and shows `.srt`/`.vtt` subtitles
-  from the torrent or a local file.
+  from the torrent, a local file or OpenSubtitles.
+- **OpenSubtitles**: with an API key set in Settings → Sources, the player's
+  subtitles menu searches OpenSubtitles in the language you pick, by the
+  title's IMDb ID (or the file's name) and by the file's hash, so subtitles
+  timed to that very release come first. Picking one downloads it; downloads
+  are kept on disk, so picking one again doesn't count against the key's
+  daily quota (5 on a free key).
 - **Any torrent** (⇧⌘O, ⌘O, drag and drop): shows each video's seeds and
   peers, best-seeded first.
 - **MKV** plays in Bobcorn's own player. It's repackaged on the fly, while it

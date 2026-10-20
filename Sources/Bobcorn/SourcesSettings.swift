@@ -5,6 +5,7 @@ struct SourcesSettings: View {
     @Environment(AppModel.self) private var model
     @State private var editing: CustomSource?
     @AppStorage(Pref.omdbKey) private var omdbKey = ""
+    @AppStorage(Pref.openSubtitlesKey) private var openSubtitlesKey = ""
 
     var body: some View {
         let store = model.sources
@@ -72,7 +73,7 @@ struct SourcesSettings: View {
             }
 
             Section {
-                TextField("OMDb API key", text: $omdbKey, prompt: Text("Optional"))
+                KeyField(title: "OMDb API key", key: $omdbKey, keyPage: URL(string: "https://www.omdbapi.com/apikey.aspx")!)
                     .onChange(of: omdbKey) { model.ratings.keyChanged() }
                 if let error = model.ratings.lastError, !omdbKey.isEmpty {
                     Text(error).font(.caption).foregroundStyle(.orange)
@@ -80,12 +81,19 @@ struct SourcesSettings: View {
             } header: {
                 Text("Rotten Tomatoes")
             } footer: {
-                HStack(spacing: 4) {
-                    Text("Tomatometer scores come from OMDb, which needs a free key.")
-                    Link("Get one at omdbapi.com", destination: URL(string: "https://www.omdbapi.com/apikey.aspx")!)
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                Text("Tomatometer scores come from OMDb, which needs a free key.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                KeyField(title: "OpenSubtitles API key", key: $openSubtitlesKey, keyPage: OpenSubtitles.keyPage)
+            } header: {
+                Text("Subtitles")
+            } footer: {
+                Text("With a key, the player's subtitles menu searches OpenSubtitles. Make one under API Consumers in your OpenSubtitles profile; a free key downloads 5 subtitles a day.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -93,6 +101,24 @@ struct SourcesSettings: View {
             SourceEditor(source: source) { saved in
                 store.upsert(saved)
                 model.sourcesChanged()
+            }
+        }
+    }
+}
+
+/// An API key, with a link to the page that hands them out.
+private struct KeyField: View {
+    let title: String
+    @Binding var key: String
+    let keyPage: URL
+
+    var body: some View {
+        LabeledContent(title) {
+            HStack(spacing: 10) {
+                TextField(title, text: $key, prompt: Text("Optional"))
+                    .labelsHidden()
+                Link("Get a Key", destination: keyPage)
+                    .help(keyPage.host ?? keyPage.absoluteString)
             }
         }
     }

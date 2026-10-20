@@ -1,6 +1,7 @@
 #if DEBUG
 import AppKit
 import AVFoundation
+import SwiftUI
 import TorrentKit
 
 /// Debug builds only: drives the UI from a script so a change can be checked
@@ -11,7 +12,7 @@ import TorrentKit
 ///
 /// Steps: wait:<s>  shot:<name>  section:<movies|shows|myList>  search:<text>
 /// back  magnet:<uri>  torrentfile:<path>  playlargest  seek:<seconds>  state
-/// lanurl:<host>  close  quit
+/// lanurl:<host>  subtitlesearch  settingsshot:<name>  close  quit
 /// Sources: addsource:<name>|<feed>[|<search>]  addapi:<name>|<base url>
 /// clearsources  feeddetail:<index>  feedplay  apisort:<sort>
 /// apidetail:<index>  apiplay[:<episode index>]
@@ -190,6 +191,25 @@ enum DebugScript {
             model.playback?.player?.play()
         case "seek":
             _ = await model.playback?.player?.seek(to: CMTime(seconds: Double(arg) ?? 0, preferredTimescale: 600))
+        case "subtitlesearch":
+            model.playback?.subtitleSearchVisible = true
+        case "settingsshot":
+            // Settings → Sources in a window of its own: the Settings scene
+            // only opens from a menu or a SettingsLink.
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 430), styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentView = NSHostingView(rootView: SourcesSettings().environment(model).frame(width: 560, height: 430))
+            window.center()
+            window.orderFront(nil)
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            let url = out.appendingPathComponent("\(arg).png")
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+            p.arguments = ["-x", "-o", "-l", String(window.windowNumber), url.path]
+            try? p.run()
+            p.waitUntilExit()
+            log("wrote \(url.path)")
+            window.close()
         case "close":
             model.closePlayback()
         case "quit":

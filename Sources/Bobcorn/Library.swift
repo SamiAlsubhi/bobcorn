@@ -129,6 +129,9 @@ enum Pref {
     static let clearCacheOnQuit = "clearCacheOnQuit"
     static let autoplayNext = "autoplayNext"
     static let omdbKey = "omdbKey"
+    static let openSubtitlesKey = "openSubtitlesKey"
+    /// The language last searched on OpenSubtitles, as its code.
+    static let subtitleLanguage = "subtitleLanguage"
     /// A folder the user picked for downloads; empty for the default.
     static let cacheFolder = "cacheFolder"
 
