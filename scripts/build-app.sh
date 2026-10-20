@@ -6,7 +6,8 @@
 #   scripts/build-app.sh install    release build, copied to /Applications
 #
 # VERSION=1.2.0 stamps that version in; UNIVERSAL=1 builds for both Apple
-# silicon and Intel.
+# silicon and Intel; SIGN_IDENTITY="Developer ID Application: …" signs it for
+# distribution, with the hardened runtime notarization needs.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -57,8 +58,12 @@ if [ ! -f "$icns" ] || [ scripts/make-icon.swift -nt "$icns" ]; then
 fi
 cp "$icns" "$app/Contents/Resources/AppIcon.icns"
 
-# Ad-hoc signature, enough to run locally.
-codesign --force --sign - "$app" >/dev/null
+if [ -n "${SIGN_IDENTITY:-}" ]; then
+    codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$app"
+else
+    # Ad-hoc signature, enough to run locally.
+    codesign --force --sign - "$app" >/dev/null
+fi
 echo "==> built $app"
 
 if [ "$install" = 1 ]; then

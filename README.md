@@ -59,6 +59,12 @@ the installer for Apple silicon and Intel, signs it with the repository's
 `UPDATE_SIGNING_KEY` secret and attaches `Bobcorn.dmg` and its signature to a
 GitHub release.
 
+Once the repository has a Developer ID Application certificate and an App
+Store Connect API key as secrets (`scripts/set-release-secrets.sh` stores
+them), releases are also signed with the hardened runtime, notarized, and
+have the ticket stapled, so they open on any Mac without a warning. Without
+them, releases are signed ad hoc.
+
 Bobcorn checks for a newer release at launch and every six hours, and
 Bobcorn → Check for Updates… checks now. When there is one, an Update button
 appears in the top bar: it downloads the installer, refuses it unless the
