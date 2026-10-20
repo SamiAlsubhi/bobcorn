@@ -138,12 +138,38 @@ struct DownloadButton: View {
 
 // MARK: - The tab
 
+/// What's about to be deleted, once confirmed.
+private enum Deletion {
+    case group(Downloads.Group)
+    case entry(Downloads.Group.Entry)
+
+    var prompt: String {
+        switch self {
+        case .group(let g): return "Delete \(g.title)?"
+        case .entry(let e): return "Delete \(e.part.label)?"
+        }
+    }
+
+    var message: String {
+        switch self {
+        case .group(let g):
+            let episodes = g.entries.count > 1 ? "All \(g.entries.count) of its episodes, " : ""
+            return "\(episodes)\(formatSize(g.bytesOnDisk)) on disk, are removed."
+        case .entry(let e):
+            guard e.item.parts.count > 1, let file = e.item.file(e.part) else {
+                return "Its \(formatSize(max(e.item.bytesOnDisk, e.item.bytesDone))) on disk are removed."
+            }
+            return "About \(formatSize(Int64(Double(file.length) * e.fraction))) on disk is freed. The other episodes stay."
+        }
+    }
+}
+
 /// Everything in the cache folder: what's downloading, what's all here, and
 /// what's partly here from being streamed. A show's episodes are one entry,
 /// however many torrents they came in.
 struct DownloadsView: View {
     @Environment(AppModel.self) private var model
-    @State private var deleting: [Downloads.Item] = []
+    @State private var deleting: Deletion?
 
     var body: some View {
         let groups = model.downloads.groups
@@ -188,25 +214,21 @@ struct DownloadsView: View {
             }
             .padding(28)
             .frame(maxWidth: 1100, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity)
         }
         .onAppear { model.downloads.refresh() }
-        .confirmationDialog(deletePrompt, isPresented: Binding(get: { !deleting.isEmpty }, set: { if !$0 { deleting = [] } }),
+        .confirmationDialog(deleting?.prompt ?? "Delete?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
                             titleVisibility: .visible) {
             Button("Delete", role: .destructive) {
-                for item in deleting { model.downloads.delete(item.id) }
+                switch deleting {
+                case .group(let group): group.items.forEach { model.downloads.delete($0.id) }
+                case .entry(let entry): model.downloads.delete(entry.item.id, part: entry.part)
+                case nil: break
+                }
             }
         } message: {
-            Text("Its \(formatSize(deleting.reduce(0) { $0 + max($1.bytesOnDisk, $1.bytesDone) })) on disk are removed.")
+            Text(deleting?.message ?? "")
         }
-    }
-
-    private var deletePrompt: String {
-        guard let first = deleting.first else { return "Delete?" }
-        if deleting.count == 1, first.parts.count == 1, let part = first.parts.first, part.label != first.about.title {
-            return "Delete \(part.label)?"
-        }
-        return "Delete \(first.about.series ?? first.about.title)?"
     }
 
     @ViewBuilder
@@ -233,7 +255,7 @@ struct DownloadsView: View {
 private struct DownloadRow: View {
     @Environment(AppModel.self) private var model
     let group: Downloads.Group
-    let delete: ([Downloads.Item]) -> Void
+    let delete: (Deletion) -> Void
 
     var body: some View {
         let entries = group.entries
@@ -326,13 +348,15 @@ private struct DownloadRow: View {
             } else if !wanted.isEmpty {
                 iconButton("arrow.down", "Resume") { wanted.forEach { model.downloads.resume($0.id) } }
             }
-            if group.state == .streamed {
-                Button { group.items.forEach { model.downloads.keep($0.id) } } label: {
+            // Parts of it only streamed: download them in full.
+            let streamed = group.items.filter { $0.state == .streamed }
+            if !streamed.isEmpty {
+                Button { streamed.forEach { model.downloads.keep($0.id) } } label: {
                     Label("Download the Rest", systemImage: "arrow.down.circle")
                 }
                 .buttonStyle(AccentButtonStyle(prominent: false))
             }
-            iconButton("trash", "Delete") { delete(group.items) }
+            iconButton("trash", entries.count > 1 ? "Delete all of it" : "Delete") { delete(.group(group)) }
         }
     }
 
@@ -360,6 +384,14 @@ private struct DownloadRow: View {
             .buttonStyle(.plain)
             .disabled(entry.part.file == nil)
             .help("Play")
+            Button { delete(.entry(entry)) } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 10))
+                    .padding(7)
+                    .background(Circle().fill(Color.white.opacity(0.1)))
+            }
+            .buttonStyle(.plain)
+            .help("Delete")
         }
         .padding(.vertical, 5)
         .contentShape(Rectangle())
@@ -373,8 +405,7 @@ private struct DownloadRow: View {
             case .complete: EmptyView()
             }
             Divider()
-            // An episode in a season pack shares one torrent with the others.
-            Button(item.parts.count > 1 ? "Delete the Torrent (\(item.parts.count) Episodes)…" : "Delete…") { delete([item]) }
+            Button("Delete…") { delete(.entry(entry)) }
         }
     }
 

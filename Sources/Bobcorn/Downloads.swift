@@ -68,7 +68,11 @@ final class Downloads {
             return info.contentFiles
                 .filter { $0.isVideo && (progress[$0.index] ?? 0) > 0 }
                 .sorted { $0.displayPath.localizedStandardCompare($1.displayPath) == .orderedAscending }
-                .map { Part(file: $0.index, label: ($0.name as NSString).deletingPathExtension) }
+                .map { file in
+                    let release = ReleaseInfo.parse(file.name)
+                    return Part(file: file.index, season: release.season, episode: release.episode,
+                                label: (file.name as NSString).deletingPathExtension)
+                }
         }
 
         func file(_ part: Part) -> TorrentFile? {
@@ -184,6 +188,9 @@ final class Downloads {
     private var opening: [String: About] = [:]
     private var pollTask: Task<Void, Never>?
     private var scanTask: Task<Void, Never>?
+    private var identifyTask: Task<Void, Never>?
+    /// Torrents looked up in the catalog sources since launch.
+    private var lookedUp = Set<String>()
 
     /// A download's session, nil while its link is being resolved.
     private struct Running {
@@ -263,6 +270,28 @@ final class Downloads {
         items.removeAll { $0.id == id }
         try? FileManager.default.removeItem(at: CachedTorrent.folder(forInfoHash: id, in: AppModel.cacheDirectory))
         schedule()
+    }
+
+    /// Deletes one film or episode: its torrent when that's all the torrent
+    /// holds, otherwise its own share of the data, leaving the rest.
+    func delete(_ id: String, part: Part) {
+        guard let item = item(id), item.parts.count > 1, let file = part.file else { return delete(id) }
+        if app?.playback?.torrentID == id {
+            app?.alertMessage = "Stop playback before deleting what's playing."
+            return
+        }
+        var about = item.about
+        about.parts = item.parts.filter { $0.file != file }
+        update(id, about)
+        let session = running[id]?.session
+        stop(id)
+        let folder = CachedTorrent.folder(forInfoHash: id, in: AppModel.cacheDirectory)
+        Task {
+            // The download saves what it has as it stops; then the file goes.
+            await session?.settle()
+            _ = await Task.detached(priority: .utility) { CachedTorrent.discard(fileIndex: file, in: folder) }.value
+            refresh()
+        }
     }
 
     /// Notes what the player streams, so the Downloads tab can name it.
@@ -373,7 +402,64 @@ final class Downloads {
                 return merged
             }
             schedule()
+            identify()
         }
+    }
+
+    /// Finds a poster and page for torrents that have neither, by their name
+    /// in the catalog sources: those from before Bobcorn kept track, and
+    /// those opened by hand. Once per torrent per launch.
+    private func identify() {
+        guard identifyTask == nil, let app else { return }
+        var sources = app.sources.enabled.filter { $0.kind == .api }
+        if let current = app.currentSource, let i = sources.firstIndex(where: { $0.id == current.id }) { sources.insert(sources.remove(at: i), at: 0) }
+        let bases = sources.compactMap { s in s.apiBase.map { (s.id, $0) } }
+        let todo = items.filter { $0.about.saved == nil && $0.about.poster == nil && $0.info != nil && !lookedUp.contains($0.id) }
+        guard !bases.isEmpty, !todo.isEmpty else { return }
+        identifyTask = Task {
+            for item in todo {
+                lookedUp.insert(item.id)
+                guard let name = item.info?.name, let match = await Self.match(name, in: bases),
+                      var about = self.item(item.id)?.about, about.saved == nil
+                else { continue }
+                about.title = match.title
+                about.poster = match.posterURL
+                about.saved = match.saved
+                if match.type == .shows { about.series = match.title }
+                update(item.id, about)
+            }
+            identifyTask = nil
+        }
+    }
+
+    /// The catalog title a torrent's name is: same title, and the same year
+    /// give or take one when both say.
+    nonisolated static func match(_ name: String, in sources: [(UUID, URL)]) async -> APITitle? {
+        let release = ReleaseInfo.parse(name)
+        let wanted = normalized(release.title)
+        guard !wanted.isEmpty else { return nil }
+        // "KolchakTheNightStalker" is searched for as words too.
+        let spaced = release.title.replacingOccurrences(of: "(?<=[a-z])(?=[A-Z])", with: " ", options: .regularExpression)
+        let queries = spaced == release.title ? [release.title] : [release.title, spaced]
+        let types: [APIMediaType] = release.season != nil ? [.shows] : [.movies, .shows]
+        for (id, base) in sources {
+            for type in types {
+                for query in queries {
+                    let q = APIQuery(sourceID: id, base: base, type: type, genre: .all, sort: .trending, search: query)
+                    guard let found = try? await APIClient.page(q, page: 1) else { continue }
+                    let year = release.year
+                    if let hit = found.first(where: { normalized($0.title) == wanted && (year == nil || $0.year == nil || abs($0.year! - year!) <= 1) }) {
+                        return hit
+                    }
+                }
+            }
+        }
+        return nil
+    }
+
+    /// "Avatar: Fire and Ash" → "avatarfireandash".
+    nonisolated static func normalized(_ title: String) -> String {
+        title.lowercased().filter { $0.isLetter || $0.isNumber }
     }
 
     /// Lets go of every download, as the engine stops: before the cache moves.
@@ -385,7 +471,7 @@ final class Downloads {
 
     nonisolated private static func scan(_ cache: URL) -> [Item] {
         var out = CachedTorrent.all(in: cache).map { c in
-            Item(id: c.infoHashHex, about: readAbout(at: c.folder) ?? About(title: c.info.name, added: modified(c.folder)),
+            Item(id: c.infoHashHex, about: readAbout(at: c.folder) ?? guessedAbout(c.info, added: modified(c.folder)),
                  info: c.info, progress: c.progress, bytesOnDisk: c.bytesOnDisk, modified: modified(c.folder))
         }
         // Downloads still waiting for their file list.
@@ -396,6 +482,14 @@ final class Downloads {
             }
         }
         return out
+    }
+
+    /// A torrent Bobcorn didn't note, named after its release: a show's
+    /// episodes go together by the show's name.
+    nonisolated static func guessedAbout(_ info: TorrentInfo, added: Date) -> About {
+        let release = ReleaseInfo.parse(info.name)
+        let title = release.title.isEmpty ? (info.name as NSString).deletingPathExtension : release.title
+        return About(title: title, series: release.season != nil ? title : nil, added: added)
     }
 
     nonisolated private static func modified(_ folder: URL) -> Date {

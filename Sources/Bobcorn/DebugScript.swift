@@ -15,7 +15,7 @@ import TorrentKit
 /// lanurl:<host>  subtitlesearch  settingsshot:<name>[|sources]  close  quit
 /// Sources: addsource:<name>|<feed>[|<search>]  addapi:<name>|<base url>
 /// clearsources  feeddetail:<index>  feedplay  apisort:<sort>
-/// apidetail:<index>  apiplay[:<episode index>]  apidownload[:<episode index>|season]  downloads  downloadplay  downloaddelete
+/// apidetail:<index>  apiplay[:<episode index>]  apidownload[:<episode index>|season]  downloads  downloadplay  deleteentry  downloaddelete
 @MainActor
 enum DebugScript {
     static func runIfRequested() {
@@ -111,6 +111,10 @@ enum DebugScript {
             } catch {
                 log("details failed: \(error)")
             }
+        case "deleteentry":
+            // The first episode of the first entry in the Downloads tab.
+            guard let entry = model.downloads.groups.first?.entries.first else { return log("nothing downloaded") }
+            model.downloads.delete(entry.item.id, part: entry.part)
         case "downloaddelete":
             for item in model.downloads.items { model.downloads.delete(item.id) }
         case "downloads":

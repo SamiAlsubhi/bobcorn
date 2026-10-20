@@ -233,6 +233,14 @@ public final class TorrentSession: @unchecked Sendable {
         }
     }
 
+    /// Waits for what the session was asked so far, such as a stop and the
+    /// save that comes with it, to be done.
+    public func settle() async {
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            queue.async { c.resume() }
+        }
+    }
+
     /// Resolves once the torrent's file list is known: at once for a .torrent,
     /// after the metadata exchange for a magnet.
     public func waitForMetadata() async throws -> TorrentInfo {

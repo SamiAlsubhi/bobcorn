@@ -86,6 +86,48 @@ final class DownloadsTests: XCTestCase {
         XCTAssertEqual(groups[1].state, .complete)
     }
 
+    func testNamesATorrentBobcornDidntNoteAfterItsRelease() throws {
+        func about(_ name: String) throws -> Downloads.About {
+            let info = try TorrentInfo(rawInfo: Bencode.encode(.dict([
+                "name": .string(name), "piece length": .int(16), "length": .int(16),
+                "pieces": .bytes([UInt8](repeating: 1, count: 20)),
+            ])))
+            return Downloads.guessedAbout(info, added: Date())
+        }
+        XCTAssertEqual(try about("Avatar Fire and Ash 2025 2160p AMZN WEB-DL DDP5.1 HDR10+ HEVC-KyoGo.mkv").title, "Avatar Fire and Ash")
+        let episode = try about("MobLand.S02E01.1080p.HEVC.x265-MeGusta[EZTVx.to].mkv")
+        XCTAssertEqual(episode.title, "MobLand")
+        XCTAssertEqual(episode.series, "MobLand", "grouped with the show's other episodes")
+        XCTAssertNil(try about("Hoppers 2026 1080p DCP Line Audio H264-DJT.mkv").series)
+    }
+
+    func testFindsATorrentsPosterInTheCatalogSources() async throws {
+        // A catalog API served from a folder: it ignores the search words and
+        // lists everything, so only matching picks.
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        func list(_ path: String, _ titles: [(id: String, title: String, year: Int)]) throws {
+            let url = base.appendingPathComponent(path)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let json = titles.map { #"{"imdb_id": "\#($0.id)", "title": "\#($0.title)", "year": "\#($0.year)", "images": {"poster": "https://img.example/\#($0.id).jpg"}}"# }
+            try Data("[\(json.joined(separator: ","))]".utf8).write(to: url)
+        }
+        try list("movies/1", [("tt1", "Avatar", 2009), ("tt2", "Avatar: Fire and Ash", 2025), ("tt5", "Avatar: Fire and Ash", 1980)])
+        try list("shows/1", [("tt3", "Kolchak: The Night Stalker", 1974), ("tt4", "MobLand", 2025)])
+        let sources = [(UUID(), base)]
+
+        let avatar = await Downloads.match("Avatar Fire and Ash 2025 2160p AMZN WEB-DL DDP5.1 HDR10+ HEVC-KyoGo", in: sources)
+        XCTAssertEqual(avatar?.id, "tt2", "the same title in the year the release names")
+        XCTAssertEqual(avatar?.posterURL?.absoluteString, "https://img.example/tt2.jpg")
+        let kolchak = await Downloads.match("KolchakTheNightStalker", in: sources)
+        XCTAssertEqual(kolchak?.id, "tt3")
+        XCTAssertEqual(kolchak?.type, .shows)
+        let mobland = await Downloads.match("MobLand.S01.1080p.x265-ELiTE", in: sources)
+        XCTAssertEqual(mobland?.id, "tt4")
+        let hoppers = await Downloads.match("Hoppers 2026 1080p DCP Line Audio H264-DJT", in: sources)
+        XCTAssertNil(hoppers)
+    }
+
     func testClearingTheCacheKeepsDownloads() throws {
         let cache = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: cache) }

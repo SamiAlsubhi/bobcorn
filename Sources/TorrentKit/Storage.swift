@@ -137,6 +137,47 @@ public struct CachedTorrent: Sendable {
         cache.appendingPathComponent(hex.lowercased(), isDirectory: true)
     }
 
+    /// Deletes one file's share of a torrent that isn't running: the pieces
+    /// holding only its bytes count as missing again, and their space is
+    /// freed where the file system can. The rest of the torrent stays.
+    @discardableResult
+    public static func discard(fileIndex: Int, in folder: URL) -> Bool {
+        let dir = SessionDirectory(url: folder)
+        guard let raw = try? Data(contentsOf: dir.infoURL),
+              let info = try? TorrentInfo(rawInfo: [UInt8](raw)),
+              var have = dir.loadHave(pieceCount: info.pieceCount)
+        else { return false }
+        let pieces = ownPieces(of: fileIndex, in: info)
+        for i in pieces { have[i] = false }
+        dir.saveHave(have)
+        let fd = open(dir.dataURL.path, O_RDWR)
+        guard fd >= 0 else { return true }
+        defer { close(fd) }
+        // Runs of whole pieces, so each hole starts on a block boundary.
+        var runs: [(start: Int64, end: Int64)] = []
+        for i in pieces {
+            let start = info.pieceOffset(i)
+            let end = start + Int64(info.pieceSize(i))
+            if let last = runs.last, last.end == start { runs[runs.count - 1].end = end } else { runs.append((start, end)) }
+        }
+        for run in runs {
+            let length = (run.end - run.start) / 4096 * 4096
+            guard length > 0 else { continue }
+            var hole = fpunchhole_t(fp_flags: 0, reserved: 0, fp_offset: off_t(run.start), fp_length: off_t(length))
+            _ = fcntl(fd, F_PUNCHHOLE, &hole)
+        }
+        return true
+    }
+
+    /// The pieces holding nothing but this file's bytes and padding.
+    static func ownPieces(of fileIndex: Int, in info: TorrentInfo) -> [Int] {
+        guard info.files.indices.contains(fileIndex), let range = info.pieceRange(for: info.files[fileIndex]) else { return [] }
+        return range.filter { i in
+            info.segments(start: info.pieceOffset(i), length: info.pieceSize(i))
+                .allSatisfy { $0.file.index == fileIndex || $0.file.isPadding }
+        }
+    }
+
     static func progress(of fileIndices: [Int], in info: TorrentInfo, have: Bitfield) -> [Int: Double] {
         var out: [Int: Double] = [:]
         for f in fileIndices where info.files.indices.contains(f) {

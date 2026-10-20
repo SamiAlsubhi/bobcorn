@@ -121,6 +121,41 @@ final class MetainfoTests: XCTestCase {
         XCTAssertEqual(CachedTorrent.folder(forInfoHash: info.infoHashHex.uppercased(), in: cache), dir.url)
     }
 
+    func testDiscardsOneFilesShareOfATorrent() throws {
+        let cache = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: cache) }
+        // A 160 KB and a 96 KB episode in 64 KB pieces; the third piece holds
+        // the end of one and the start of the other.
+        let piece = 65536
+        let lengths = [160 * 1024, 96 * 1024]
+        let files = [("e1.mp4", lengths[0]), ("e2.mp4", lengths[1])]
+        let total = lengths.reduce(0, +)
+        let infoDict = BValue.dict([
+            "name": .string("pack"),
+            "piece length": .int(Int64(piece)),
+            "pieces": .bytes([UInt8](repeating: 0, count: (total + piece - 1) / piece * 20)),
+            "files": .list(files.map { .dict(["length": .int(Int64($0.1)), "path": .list([.string($0.0)])]) }),
+        ])
+        let info = try TorrentInfo(rawInfo: Bencode.encode(infoDict))
+        let dir = SessionDirectory(cache: cache, infoHash: info.infoHash)
+        try dir.ensureExists()
+        dir.saveInfo(info)
+        let bytes = Data((0..<total).map { UInt8(truncatingIfNeeded: $0 &* 7 &+ 1) })
+        try bytes.write(to: dir.dataURL)
+        var have = Bitfield(count: info.pieceCount)
+        for i in 0..<info.pieceCount { have[i] = true }
+        dir.saveHave(have)
+        XCTAssertEqual(CachedTorrent.ownPieces(of: 0, in: info), [0, 1], "piece 2 is shared")
+
+        XCTAssertTrue(CachedTorrent.discard(fileIndex: 0, in: dir.url))
+        let after = try XCTUnwrap(CachedTorrent.all(in: cache).first)
+        XCTAssertEqual(after.progress[0], 0.2, "the 32 KB in the shared piece stay")
+        XCTAssertEqual(after.progress[1], 1)
+        // The other episode reads back whole, and the space is freed.
+        XCTAssertEqual(try Data(contentsOf: dir.dataURL).suffix(lengths[1]), bytes.suffix(lengths[1]))
+        XCTAssertLessThan(after.bytesOnDisk, Int64(total - piece))
+    }
+
     func testRejectsPieceCountMismatch() {
         let info = BValue.dict([
             "name": .string("x"), "piece length": .int(16), "length": .int(40),
