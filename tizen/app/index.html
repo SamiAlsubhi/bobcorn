@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=1920, user-scalable=no">
+    <title>Bobcorn</title>
+    <link rel="stylesheet" href="app.css">
+    <!-- Samsung's TV APIs (AVPlay). Absent in a desktop browser, where the app falls back to <video>. -->
+    <script src="$WEBAPIS/webapis/webapis.js"></script>
+</head>
+<body>
+    <object id="avplayer" type="application/avplayer"></object>
+    <video id="html-player" playsinline></video>
+    <div id="subtitle"></div>
+    <main id="screen"></main>
+    <div id="osd" hidden></div>
+    <div id="toast" hidden></div>
+    <script src="js/store.js"></script>
+    <script src="js/engine.js"></script>
+    <script src="js/catalog.js"></script>
+    <script src="js/keys.js"></script>
+    <script src="js/services.js"></script>
+    <script src="js/nav.js"></script>
+    <script src="js/player.js"></script>
+    <script src="js/views.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>
