@@ -121,6 +121,8 @@ input.focused { border-color: #f2f1f4; }
 .row.active span:first-child:before { content: "✓ "; color: #e5533d; font-weight: 700; }
 .row.focused { background: #f2f1f4; color: #17161b; }
 .row.focused .dim { color: #3c3a43; }
+.row .ok { color: #7bd88f; font-weight: 600; }
+.row.focused .ok { color: #1f7a33; }
 .add-row { display: flex; align-items: center; margin-top: 18px; }
 .add-row input { margin-right: 16px; width: 520px; }
 .add-row input:first-child { width: 760px; }

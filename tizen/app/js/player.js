@@ -37,15 +37,20 @@ var Player = (function () {
                     onbufferingcomplete: function () { if (s) { s.buffering = false; render(); } },
                     oncurrentplaytime: function (ms) { if (s) s.time = ms / 1000; },
                     onstreamcompleted: function () { finished(); },
-                    onerror: function (e) { fail('The TV could not play this file (' + e + ').'); },
+                    onerror: function (e) { streamError(String(e)); },
                     onsubtitlechange: function (duration, text) { if (s && s.sub && s.sub.kind === 'embedded') showLine(text, duration); },
                     onevent: function () {}
                 });
-                av.prepareAsync(function () { onReady(); }, function (e) { onError('The TV could not open this file: ' + e); });
+                av.prepareAsync(function () { onReady(); }, function (e) { onError(String((e && (e.name || e.message)) || e)); });
             } else {
                 video.src = url;
                 video.onloadedmetadata = function () { video.onloadedmetadata = null; onReady(); };
-                video.onerror = function () { onError('This browser cannot play this file. On the TV, MKV plays.'); };
+                // Codes as AVPlay names them, so a dropped connection is retried the same way.
+                video.onerror = function () {
+                    var c = video.error ? video.error.code : 0;
+                    if (s && s.loading === 'Starting…' && c === 4) return fail('This browser cannot play this file. On the TV, MKV plays.');
+                    (s && s.loading === 'Starting…' ? onError : streamError)(c === 2 ? 'PLAYER_ERROR_CONNECTION_FAILED' : 'MEDIA_ERR_' + c);
+                };
                 video.ontimeupdate = function () { if (s) s.time = video.currentTime; };
                 video.onwaiting = function () { if (s) { s.buffering = true; render(); } };
                 video.onplaying = function () { if (s) { s.buffering = false; render(); } };
@@ -509,14 +514,18 @@ var Player = (function () {
         var ep = req.episode;
         s = {
             title: req.title, episode: ep || null, label: req.title.title, subLine: ep ? ep.tag + ' · ' + ep.title : (req.option.quality || ''),
-            resumeKey: ep ? ep.key : req.title.key, next: req.next || null, onExit: onExit,
+            resumeKey: ep ? ep.key : req.title.key, next: req.next || null, onExit: onExit, req: req, retries: 0,
             loading: 'Finding the torrent…', buffering: false, time: 0, seekTarget: null, status: null,
             embedded: [], audios: [], audioIndex: 0, sub: null, cues: null, focus: 'bar', btn: 0, menu: null
         };
         document.body.classList.add('playing');
         Nav.setHandler(keys);
         showOSD();
-        every(1000, function () { poll(); if (s && s.loading && s.status) { s.loading = 'Connecting · ' + peersText(s.status); render(); } });
+        every(1000, function () {
+            poll();
+            // Until the torrent is open, show who's connecting (the buffering step writes its own line).
+            if (s && s.status && /^(Finding|Connecting)/.test(s.loading || '')) { s.loading = 'Connecting · ' + peersText(s.status); render(); }
+        });
         every(200, tickSubtitle);
         var session = s;
         Engine.ensure().then(function () {
@@ -528,17 +537,87 @@ var Player = (function () {
             if (!file) throw new Error('This torrent has no video file the TV can play.');
             s.file = file;
             s.fileIndex = file.index;
-            s.loading = 'Buffering · ' + file.path.split('/').pop();
-            render();
-            backend.open(Engine.fileURL(torrent.id, file.index), function () {
+            var startAt = req.startAt || 0;
+            return prebuffer(session, startAt).then(function () {
                 if (s !== session) return;
-                s.duration = backend.duration();
-                chooseInitialSubtitle();
-                var startAt = req.startAt || 0;
-                function go() { s.loading = null; backend.play(); showOSD(); }
-                if (startAt > 0) { s.time = startAt; report(); backend.seek(startAt, go); } else go();
+                openStream(session, startAt, true);
                 every(2000, report);
-            }, function (msg) { fail(msg); });
+            });
+        }).catch(function (err) { if (s === session) fail(err.message || String(err)); });
+    }
+
+    /* Waits until the engine holds what the TV's player reads first: the file's start and end (the container's
+       header and index) and a few MB from where playback starts. AVPlay gives up on slow first reads
+       (PLAYER_ERROR_CONNECTION_FAILED), where a browser's player would simply wait. Up to 2 minutes. */
+    function prebuffer(session, at) {
+        var name = s.file.path.split('/').pop(), started = Date.now(), runtime = (s.title.runtime || 0) * 60;
+        var want = Math.min(4 * 1024 * 1024, s.file.size);
+        // Put the engine's window where playback will start.
+        Engine.position(s.torrent.id, s.fileIndex, at, s.duration || runtime);
+        return new Promise(function (resolve, reject) {
+            (function check() {
+                if (s !== session) return resolve();
+                Engine.status(s.torrent.id).then(function (st) {
+                    if (s !== session) return resolve();
+                    s.status = st;
+                    var ready = st.headReady && st.tailReady && st.aheadBytes >= want;
+                    if (ready) return resolve();
+                    var waited = Date.now() - started;
+                    if (waited > 120000) {
+                        if (!st.peers && !st.webSeeds) return reject(new Error('Nobody is sharing this torrent right now. Try another quality, or try again later.'));
+                        return resolve();   // slow, but data is coming: let the player try
+                    }
+                    // Start, index and the first MB each count a third.
+                    var pct = Math.round(((st.headReady ? 1 : 0) + (st.tailReady ? 1 : 0) + Math.min(1, st.aheadBytes / want)) / 3 * 100);
+                    s.loading = 'Buffering ' + pct + '% · ' + (peersText(st) || 'finding peers…') + ' · ' + name;
+                    render();
+                    setTimeout(check, 1000);
+                }, function () {
+                    // The engine stopped answering: start it again (the torrent is reopened by the caller's retry).
+                    if (Date.now() - started > 120000) return reject(new Error('The torrent engine stopped. Restart the TV and try again.'));
+                    Engine.ensure().then(function () { setTimeout(check, 1000); }, reject);
+                });
+            })();
+        });
+    }
+
+    /* Hands the engine's stream to the player and starts at `at` seconds. */
+    function openStream(session, at, first) {
+        s.loading = 'Starting…';
+        render();
+        backend.open(Engine.fileURL(s.torrent.id, s.fileIndex), function () {
+            if (s !== session) return;
+            s.duration = backend.duration();
+            if (first) chooseInitialSubtitle();
+            else if (s.sub) setSubtitle(s.sub);
+            function go() { s.loading = null; s.playingSince = Date.now(); backend.play(); showOSD(); }
+            if (at > 0) { s.time = at; report(); backend.seek(at, go); } else go();
+        }, function (code) { streamError(code); });
+    }
+
+    /* The player lost the stream. Connection problems are retried (3 times, then a minute of good playback
+       resets the count): the engine is restarted if it stopped, the torrent reopened, and playback continues
+       where it was. Anything else is a real playback error. */
+    function streamError(code) {
+        if (!s || s.error) return;
+        var session = s, at = s.time || 0;
+        if (s.playingSince && Date.now() - s.playingSince > 60000) s.retries = 0;
+        var network = /CONNECTION|NETWORK|TIMEOUT|TIMED_OUT|INVALID_STATE|NO_RESPONSE|HTTP/i.test(code);
+        if (!network || (s.retries || 0) >= 3) {
+            fail('The TV could not play this file (' + code + ').' + (network ? ' The torrent may be too slow right now; try another quality.' : ''));
+            return;
+        }
+        s.retries = (s.retries || 0) + 1;
+        s.playingSince = 0;
+        backend.stop();
+        s.loading = 'Reconnecting (' + s.retries + ' of 3)…';
+        showOSD();
+        Engine.ensure().then(function () {
+            return Engine.open(s.req.option.link, s.title.runtime);
+        }).then(function (torrent) {
+            if (s !== session) return;
+            s.torrent = torrent;
+            return prebuffer(session, at).then(function () { if (s === session) openStream(session, at, false); });
         }).catch(function (err) { if (s === session) fail(err.message || String(err)); });
     }
 

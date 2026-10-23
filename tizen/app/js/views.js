@@ -525,6 +525,21 @@ var Views = (function () {
         var engineRow = h('p', { class: 'dim', text: 'Engine: checking…' });
         page.appendChild(h('h2', { text: 'About' }));
         page.appendChild(engineRow);
+
+        // Troubleshooting: lets a computer on the same network read the engine's log.
+        var sharing = Store.logSharing(), ip = '';
+        try { ip = (typeof webapis !== 'undefined' && webapis.network) ? webapis.network.getIp() : ''; } catch (e) { ip = ''; }
+        page.appendChild(h('div', { class: 'row focusable', 'data-key': 'sharelog', onclick: function () {
+            var on = !Store.logSharing();
+            Store.setLogSharing(on);
+            Engine.ensure().then(function () { return Engine.shareLog(on); }).then(function () {
+                toast(on ? 'Sharing the engine log on your network' : 'Stopped sharing the engine log');
+                render();
+            }, function (e) { toast(e.message); });
+        } }, [h('span', { text: 'Share the engine\'s log on my home network' }), h('span', { class: sharing ? 'ok' : 'dim', text: sharing ? 'On' : 'Off' })]));
+        page.appendChild(h('p', { class: 'dim', text: sharing
+            ? 'For troubleshooting: a computer on your network can read it at http://' + (ip || '<this TV\'s IP>') + ':8616/log. It shows what Bobcorn streams; turn it off when you\'re done.'
+            : 'For troubleshooting playback problems. Off by default.' }));
         Engine.ensure().then(function (p) { engineRow.textContent = 'Engine ' + p.version + ' running on Node ' + p.node + '.'; },
             function (e) { engineRow.textContent = 'Engine: ' + e.message; });
 

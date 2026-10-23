@@ -69,6 +69,14 @@ on the TV take precedence. OMDb's example address from its welcome email works a
 `build/Bobcorn.wgt` with [TizenBrew Installer](https://github.com/reisxd/TizenBrewInstaller), which re-signs it
 with your Samsung account.
 
+## When a film won't play
+
+Before playing, Bobcorn waits until the engine holds the file's start, its index and a few MB, then hands the stream
+to the TV's player, and it reconnects by itself (3 times) if the stream drops. If a torrent is still too slow,
+Settings → About → **Share the engine's log on my home network** lets a computer on the same network read the
+engine's log (`python3 tizen/tools/sdb.py log <TV IP>`, or `http://<TV IP>:8616/log`): which peers it found, every
+read the player made and how long it waited. It's off by default; turn it off again when you're done.
+
 ## Working on it
 
 - **The app in a browser:** run the engine on the Mac, `BOBCORN_HOST=127.0.0.1 node tizen/service/dev.js`, serve

@@ -19,9 +19,14 @@ const BEHIND_SECONDS = 300;
 const AHEAD_SECONDS = 900;
 const PIN_BYTES = 2 * 1024 * 1024;
 const DEFAULT_BPS = 600000;
-const MAX_PEERS = 40;
+const MAX_PEERS = 50;
 const MAX_CONNECTING = 15;
-const REQUEST_TIMEOUT = 30000;
+const REQUEST_TIMEOUT = 20000;       // a block not delivered in this long is asked of someone else
+const URGENT_TIMEOUT = 6000;         // ...or this long, right at the playhead
+const CHOKED_GIVE_UP = 45000;        // a peer that won't send for this long makes room for another
+const DUPLICATE_AFTER = 2500;
+const UPLOAD_SLOTS = 6;             // peers we upload to at once, as the Mac engine does
+const UPLOAD_RATE = 1024 * 1024;     // bytes per second at most, to spare the home connection        // an idle fast peer may re-ask a block another peer has had this long
 const SEEK_STREAM_BYTES = 4 * 1024 * 1024; // a read outside the window this long is playback, not a probe
 
 function cacheCap() {
@@ -47,6 +52,7 @@ class Torrent extends EventEmitter {
         this.closed = false;
 
         this.peers = new Map(); // key -> Peer
+        this.closeReasons = {};
         this.candidates = []; // [{host, port}]
         this.known = new Set(); // every address ever offered
         this.connecting = 0;
@@ -69,6 +75,8 @@ class Torrent extends EventEmitter {
         this.win = null;
 
         this.downloaded = 0;
+        this.uploaded = 0;
+        this.uploadBudget = UPLOAD_RATE;
         this.speedSamples = [];
         this.speedBucket = 0;
         this.timers = [];
@@ -185,15 +193,31 @@ class Torrent extends EventEmitter {
             let counted = true;
             const uncount = () => { if (counted) { counted = false; this.connecting--; } };
             this.peers.set(peer.key, peer);
-            peer.on('handshake', () => { uncount(); this.schedule(); });
-            peer.on('unchoke', () => this.schedule());
+            peer.on('handshake', () => {
+                uncount();
+                peer.chokedSince = Date.now();
+                this.sendBitfield(peer);
+                this.schedule();
+            });
+            // Uploading, as the Mac engine does: peers that get pieces from us send more back.
+            peer.on('interested', () => {
+                let open = 0;
+                this.peers.forEach(p => { if (!p.amChoking) open++; });
+                if (this.info && open < UPLOAD_SLOTS) peer.unchoke();
+            });
+            peer.on('not-interested', () => peer.choke());
+            peer.on('request', (index, begin, length) => this.serve(peer, index, begin, length));
+            peer.on('unchoke', () => { peer.chokedSince = 0; this.schedule(); });
             peer.on('have', () => this.schedule());
             peer.on('bitfield', () => this.schedule());
-            peer.on('choke', () => this.releasePeer(peer));
+            peer.on('choke', () => { peer.chokedSince = Date.now(); this.releasePeer(peer); });
             peer.on('block', (index, begin, data) => this.onBlock(peer, index, begin, data));
             peer.on('extended', () => this.requestMetadata(peer));
             peer.on('metadata', (piece, data, total) => this.onMetadata(peer, piece, data, total));
-            peer.on('close', () => {
+            peer.on('close', (reason) => {
+                // Why connections end, by reason (in /status): tells unreachable peers from refusals.
+                const why = (peer.handshaken ? 'after handshake: ' : 'before handshake: ') + reason;
+                this.closeReasons[why] = (this.closeReasons[why] || 0) + 1;
                 uncount();
                 this.peers.delete(peer.key);
                 this.releasePeer(peer);
@@ -488,32 +512,79 @@ class Torrent extends EventEmitter {
             }
         });
 
-        // Peers fill their request pipelines.
-        this.peers.forEach(peer => {
-            if (!peer.handshaken || peer.choked || peer.closed) return;
-            const limit = Math.min(peer.maxRequests, 48);
-            for (let k = 0; k < list.length && peer.requests.size < limit; k++) {
-                const i = list[k];
-                if (!peer.has(i)) continue;
-                let a = this.active.get(i);
-                if (a && a.owner !== 'peers') continue;
-                if (!a) {
-                    if (this.activePeerPieces() >= this.maxActive()) continue;
-                    a = this.newActive(i, 'peers');
-                }
-                const endgame = urgent.indexOf(i) !== -1;
-                for (let b = 0; b < a.blocks && peer.requests.size < limit; b++) {
-                    if (a.received[b]) continue;
-                    let set = a.requestedBy.get(b);
-                    if (!set) { set = new Set(); a.requestedBy.set(b, set); }
-                    if (set.has(peer.key)) continue;
-                    // Each block from one peer; near the playhead, up to three at once.
-                    if (set.size > 0 && !(endgame && set.size < 3)) continue;
-                    set.add(peer.key);
-                    peer.request(i, b * BLOCK, this.blockLength(i, b));
+        // Peers fill their request pipelines: each as deep as its speed warrants (about 3 s of data), so a
+        // slow peer can't sit on the blocks that fast ones would deliver at once.
+        const fastest = [];
+        this.peers.forEach(peer => { if (peer.handshaken && !peer.choked && !peer.closed) fastest.push(peer); });
+        fastest.sort((x, y) => (y.rate || 0) - (x.rate || 0));
+        const now = Date.now();
+        // Once comfortably ahead (2 min), download no faster than 4x the video's rate (at least 3 MB/s):
+        // plenty to stay ahead, and gentler on the home network. Pieces at the playhead are never held back.
+        const calm = this.secondsAhead() > 120 && this.downSpeed() > Math.max(3 * 1024 * 1024, 4 * (this.win ? this.win.bps : 0));
+        fastest.forEach(peer => {
+            const limit = calm ? Math.min(this.pipeline(peer), 8) : this.pipeline(peer);
+            if (peer.requests.size >= limit) return;
+            // First pass: blocks nobody has asked for. Second pass, for a peer still with room: blocks a
+            // slower peer has had for a while (endgame-style), so the playhead never waits on the slowest.
+            for (let pass = 0; pass < 2 && peer.requests.size < limit; pass++) {
+                for (let k = 0; k < list.length && peer.requests.size < limit; k++) {
+                    const i = list[k];
+                    if (!peer.has(i)) continue;
+                    let a = this.active.get(i);
+                    if (a && a.owner !== 'peers') continue;
+                    const urgentPiece = urgent.indexOf(i) !== -1;
+                    if (!a) {
+                        // The pieces at the playhead always start; others wait for room under the cap, or
+                        // pieces further ahead stuck on slow peers would keep the player waiting (a deadlock
+                        // seen on a TV: the player stalled for minutes on one piece that never began).
+                        if (pass === 1 || (!urgentPiece && this.activePeerPieces() >= this.maxActive())) continue;
+                        a = this.newActive(i, 'peers');
+                    }
+                    for (let b = 0; b < a.blocks && peer.requests.size < limit; b++) {
+                        if (a.received[b]) continue;
+                        let set = a.requestedBy.get(b);
+                        if (!set) { set = new Set(); a.requestedBy.set(b, set); }
+                        if (set.has(peer.key)) continue;
+                        if (set.size > 0) {
+                            if (pass === 0 || set.size >= (urgentPiece ? 3 : 2)) continue;
+                            if (!this.stuckOnSlower(set, i, b, peer, now)) continue;
+                        }
+                        set.add(peer.key);
+                        peer.request(i, b * BLOCK, this.blockLength(i, b));
+                    }
                 }
             }
         });
+    }
+
+    // Contiguous seconds of video held from the playhead.
+    secondsAhead() {
+        const w = this.win, f = this.file;
+        if (!w || !f || !this.storage) return 0;
+        const last = this.pieceAt(f.offset + f.size - 1);
+        let i = w.pHead;
+        while (i <= last && this.storage.has(i)) i++;
+        const reach = Math.min(f.offset + f.size, i * this.info.pieceLength);
+        return Math.max(0, reach - (f.offset + w.head)) / w.bps;
+    }
+
+    // Requests a peer may have in flight: about 3 s of its measured speed, 8 for a new one, at most 250.
+    pipeline(peer) {
+        const byRate = Math.ceil((peer.rate || 0) * 3 / BLOCK);
+        return Math.max(8, Math.min(peer.maxRequests, 250, byRate + 4));
+    }
+
+    // Whether block b of piece i, asked of the peers in `set`, waits on someone slower than `peer` who has
+    // had it longer than DUPLICATE_AFTER.
+    stuckOnSlower(set, i, b, peer, now) {
+        let stuck = true;
+        set.forEach(key => {
+            const other = this.peers.get(key);
+            const r = other && other.requests.get(i + ':' + (b * BLOCK));
+            if (!other || !r) return;
+            if ((other.rate || 0) >= (peer.rate || 0) || now - r.at < DUPLICATE_AFTER) stuck = false;
+        });
+        return stuck;
     }
 
     activePeerPieces() {
@@ -569,6 +640,30 @@ class Torrent extends EventEmitter {
         }
     }
 
+    // The pieces we hold, for a newly connected peer.
+    sendBitfield(peer) {
+        if (!this.info || !this.storage || !this.storage.count) return;
+        const bits = util.alloc(Math.ceil(this.info.pieces.length / 8));
+        this.storage.forEach(i => { bits[i >> 3] |= 0x80 >> (i & 7); });
+        peer.sendBitfield(bits);
+    }
+
+    // A block a peer asked for, from the cache: only to peers we've unchoked, only what we still hold,
+    // within UPLOAD_RATE. Anything else is left unanswered and the peer asks someone else.
+    serve(peer, index, begin, length) {
+        if (peer.amChoking || !this.info || !this.storage || !this.storage.has(index)) return;
+        if (length > 128 * 1024 || begin + length > this.pieceLength(index) || peer.serving >= 16) return;
+        if (this.uploadBudget < length) return;
+        this.uploadBudget -= length;
+        peer.serving++;
+        this.storage.read(index, begin, length, (err, block) => {
+            peer.serving--;
+            if (err || peer.closed || peer.amChoking) return;
+            peer.sendPiece(index, begin, block);
+            this.uploaded += block.length;
+        });
+    }
+
     // A peer went away or choked us: its requests are void.
     releasePeer(peer) {
         peer.requests.forEach(r => {
@@ -603,6 +698,8 @@ class Torrent extends EventEmitter {
                 waiting.forEach(fn => fn());
             }
             this.emit('piece', index);
+            // Tell connected peers we have it now (those that lack it may ask us for it).
+            this.peers.forEach(p => { if (p.handshaken && !p.closed && !p.has(index)) p.sendHave(index); });
             this.schedule();
         });
     }
@@ -615,13 +712,21 @@ class Torrent extends EventEmitter {
     // Once a second: speed, request timeouts, peer upkeep.
     tick() {
         if (this.closed) return;
+        this.uploadBudget = UPLOAD_RATE;
         this.speedSamples.push(this.speedBucket);
         this.speedBucket = 0;
         if (this.speedSamples.length > 5) this.speedSamples.shift();
         const now = Date.now();
+        const urgent = this.info && this.storage ? this.wantedList().slice(0, 3) : [];
+        let chokedLongest = null;
         this.peers.forEach(peer => {
+            // Speed over the last few seconds (smoothed), for sizing its pipeline.
+            const got = peer.downloaded - (peer.lastCount || 0);
+            peer.lastCount = peer.downloaded;
+            peer.rate = Math.round((peer.rate || 0) * 0.6 + got * 0.4);
             peer.requests.forEach(r => {
-                if (now - r.at > REQUEST_TIMEOUT) {
+                const limit = urgent.indexOf(r.index) !== -1 ? URGENT_TIMEOUT : REQUEST_TIMEOUT;
+                if (now - r.at > limit) {
                     peer.cancel(r.index, r.begin, r.length);
                     const a = this.active.get(r.index);
                     const set = a && a.requestedBy.get(r.begin / BLOCK);
@@ -629,7 +734,11 @@ class Torrent extends EventEmitter {
                 }
             });
             if (peer.handshaken && !peer.choked && peer.requests.size && now - peer.lastData > 60000) peer.destroy('snubbed');
+            if (peer.handshaken && peer.choked && peer.chokedSince && now - peer.chokedSince > CHOKED_GIVE_UP &&
+                (!chokedLongest || peer.chokedSince < chokedLongest.chokedSince)) chokedLongest = peer;
         });
+        // Swap out the peer that has refused to send the longest, while there are others to try.
+        if (chokedLongest && this.candidates.length && this.peers.size >= MAX_PEERS - 5) chokedLongest.destroy('kept us choked');
         if (this.peers.size < 10 && now - this.lastDHT > 300000) this.lookupDHT();
         this.connectMore();
         this.schedule();
@@ -727,7 +836,19 @@ class Torrent extends EventEmitter {
             cacheBytes: this.storage ? this.storage.bytes : 0,
             pieces: { have: 0, want: 0 }
         };
-        this.peers.forEach(p => { if (p.handshaken) s.peers++; });
+        s.unchoked = 0;
+        s.requests = 0;
+        this.peers.forEach(p => {
+            if (!p.handshaken) return;
+            s.peers++;
+            if (!p.choked) s.unchoked++;
+            s.requests += p.requests.size;
+        });
+        s.candidates = this.candidates ? this.candidates.length : 0;
+        s.closes = this.closeReasons;
+        s.uploaded = this.uploaded;
+        s.uploading = 0;
+        this.peers.forEach(p => { if (!p.amChoking) s.uploading++; });
         this.webSeeds.forEach(w => { if (w.active > 0) s.webSeeds++; });
         const w = this.win;
         if (!w || !this.file) return s;
@@ -744,6 +865,10 @@ class Torrent extends EventEmitter {
         const reach = Math.min(f.offset + f.size, i * this.info.pieceLength);
         s.aheadBytes = Math.max(0, reach - (f.offset + w.head));
         s.aheadSeconds = Math.round(s.aheadBytes / w.bps);
+        // The container's start and index (MP4 moov, MKV cues): a player reads these first.
+        const all = (a, b) => { for (let j = a; j <= b; j++) if (!this.storage.has(j)) return false; return true; };
+        s.headReady = all(w.headPins[0], w.headPins[1]);
+        s.tailReady = all(w.tailPins[0], w.tailPins[1]);
         return s;
     }
 

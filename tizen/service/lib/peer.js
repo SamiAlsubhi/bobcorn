@@ -22,6 +22,10 @@ class Peer extends EventEmitter {
         this.buffer = util.alloc(0);
         this.handshaken = false;
         this.choked = true; // the peer is choking us
+        this.amChoking = true; // we are choking the peer (no uploads to it)
+        this.peerInterested = false;
+        this.uploaded = 0;
+        this.serving = 0; // its requests being read from the cache
         this.bitfield = null; // Buffer, MSB first
         this.haves = new Set(); // haves seen before the bitfield could be sized
         this.requests = new Map(); // "index:begin" -> { index, begin, length, at }
@@ -78,6 +82,21 @@ class Peer extends EventEmitter {
     }
 
     interested() { this.message(2); }
+    choke() { if (!this.amChoking) { this.amChoking = true; this.message(0); } }
+    unchoke() { if (this.amChoking) { this.amChoking = false; this.message(1); } }
+    sendBitfield(bits) { this.message(5, bits); }
+    sendHave(index) {
+        const p = util.alloc(4);
+        p.writeUInt32BE(index, 0);
+        this.message(4, p);
+    }
+    sendPiece(index, begin, block) {
+        const p = util.alloc(8);
+        p.writeUInt32BE(index, 0);
+        p.writeUInt32BE(begin, 4);
+        this.uploaded += block.length;
+        this.message(7, Buffer.concat([p, block]));
+    }
 
     request(index, begin, length) {
         const p = util.alloc(12);
@@ -177,11 +196,22 @@ class Peer extends EventEmitter {
                 this.emit('block', index, begin, block);
                 break;
             }
+            case 2:
+                this.peerInterested = true;
+                this.emit('interested');
+                break;
+            case 3:
+                this.peerInterested = false;
+                this.emit('not-interested');
+                break;
+            case 6: // the peer asks us for a block
+                if (p.length >= 12) this.emit('request', p.readUInt32BE(0), p.readUInt32BE(4), p.readUInt32BE(8));
+                break;
             case 20:
                 this.handleExtended(p);
                 break;
             default:
-                break; // interested, request (we don't serve), cancel, port, fast-extension...
+                break; // cancel (we answer requests at once), port, fast-extension...
         }
     }
 

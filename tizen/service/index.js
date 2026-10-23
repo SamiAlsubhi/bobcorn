@@ -7,7 +7,7 @@ let instance = null;
 module.exports.onStart = function () {
     if (instance) return;
     // Keep one bad torrent or socket from taking the whole service down.
-    process.on('uncaughtException', e => console.log('[bobcorn] uncaught:', e && (e.stack || e.message)));
+    process.on('uncaughtException', e => require('./lib/util').log('uncaught:', e && (e.stack || e.message)));
     instance = require('./lib/server').createServer();
     instance.listen();
 };

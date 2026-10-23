@@ -50,9 +50,19 @@ var Engine = (function () {
 
     function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
-    /* Starts the service if it isn't answering, then waits for it (up to ~20 s). */
+    /* Starts the service if it isn't answering, then waits for it (up to ~20 s). A freshly started engine
+       gets the log-sharing switch from Settings again. */
     function ensure() {
         return ping().catch(function () {
+            return start().then(function (p) {
+                if (Store.logSharing()) request('POST', '/share-log', { on: true }).catch(function () {});
+                return p;
+            });
+        });
+    }
+
+    function start() {
+        return Promise.resolve().then(function () {
             if (onTV) {
                 var pkg = tizen.application.getCurrentApplication().appInfo.packageId;
                 try {
@@ -74,7 +84,7 @@ var Engine = (function () {
 
     return {
         base: BASE,
-        VERSION: '1.1.0',   // the engine this app was built with (tizen/service/lib/server.js)
+        VERSION: '1.3.0',   // the engine this app was built with (tizen/service/lib/server.js)
         ensure: ensure,
         /* GET through the engine, which has no CORS limits. Resolves to parsed JSON, or text. */
         fetch: function (url) { return request('GET', '/fetch?url=' + encodeURIComponent(url), undefined, 30000); },
@@ -96,6 +106,8 @@ var Engine = (function () {
             return request('POST', '/torrents/' + id + '/position', { file: file, seconds: seconds, duration: duration }).catch(function () {});
         },
         status: function (id) { return request('GET', '/torrents/' + id + '/status', undefined, 4000); },
+        /* Troubleshooting: the engine serves its log (only that) on the home network at port 8616. */
+        shareLog: function (on) { return request('POST', '/share-log', { on: !!on }); },
         close: function (id) { return request('DELETE', '/torrents/' + id).catch(function () {}); }
     };
 })();

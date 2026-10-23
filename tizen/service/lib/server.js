@@ -13,7 +13,7 @@ const fetch = require('./fetch');
 const util = require('./util');
 const unzip = require('./unzip');
 
-const VERSION = '1.1.0';
+const VERSION = '1.3.0';
 const PORT = 8615;
 
 function pickCacheDir() {
@@ -77,7 +77,24 @@ function createServer() {
     const cacheDir = pickCacheDir();
     wipe(cacheDir);
     const torrents = new Map(); // id -> Torrent
-    util.log('cache in', cacheDir, '| node', process.version, '| TLS checks', fetch.VERIFY_TLS ? 'on' : 'off');
+    // The log file sits beside the cache (which is wiped at start), so it survives a restart.
+    util.setLogFile(cacheDir.replace(/\/+$/, '') + '.log');
+    util.log('engine', VERSION, 'started | cache in', cacheDir, '| node', process.version, '| TLS checks', fetch.VERIFY_TLS ? 'on' : 'off');
+    // Every 30 s: memory and what's open, to tell a TV killing the service from a stream problem.
+    const health = setInterval(() => {
+        // process.memoryUsage() is refused in a TV's sandbox (it reads /proc); V8's own figures work.
+        let heap = 0, external = 0;
+        try { const h = require('v8').getHeapStatistics(); heap = h.used_heap_size; } catch (e) { /* unknown */ }
+        try { external = process.memoryUsage().external; } catch (e) { /* refused on the TV */ }
+        const parts = ['health | heap', Math.round(heap / 1048576) + 'MB' + (external ? ' external ' + Math.round(external / 1048576) + 'MB' : '')];
+        torrents.forEach(t => {
+            const s = t.status();
+            parts.push('| ' + (t.name || t.infoHash).slice(0, 40), 'peers', s.peers, 'web', s.webSeeds,
+                Math.round(s.downSpeed / 1024) + 'KB/s', 'ahead', s.aheadSeconds + 's', 'cache', Math.round(s.cacheBytes / 1048576) + 'MB');
+        });
+        util.log.apply(null, parts);
+    }, 30000);
+    if (health.unref) health.unref();
 
     const closeOthers = (keepId) => {
         torrents.forEach((t, id) => {
@@ -178,7 +195,7 @@ function createServer() {
         let remaining = end - start + 1;
         let done = false;
         const opened = Date.now();
-        util.log('read', index, 'bytes', start + '-' + end);
+        util.log('read', index, req.method, 'range', req.headers.range || 'none', '->', start + '-' + end);
         const stop = () => {
             if (done) return;
             done = true;
@@ -193,7 +210,11 @@ function createServer() {
             if (remaining <= 0) { stop(); return res.end(); }
             t.read(reader, Math.min(remaining, 256 * 1024), (err, buf) => {
                 if (done) return;
-                if (err || !buf.length) { stop(); return res.end(); }
+                if (err || !buf.length) {
+                    if (err) util.log('read', index, 'failed at', end - remaining + 1, err.message);
+                    stop();
+                    return res.end();
+                }
                 remaining -= buf.length;
                 if (res.write(buf)) pump();
                 else res.once('drain', pump);
@@ -270,6 +291,18 @@ function createServer() {
             if (u.pathname === '/ping') {
                 return json(res, 200, { ok: true, version: VERSION, node: process.version, cache: cacheDir });
             }
+            if (u.pathname === '/log') {
+                res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+                return res.end(util.recentLog());
+            }
+            // Troubleshooting, switched in Settings: serve only the log on the home network.
+            if (u.pathname === '/share-log' && req.method === 'POST') {
+                return readBody(req, (err, b) => {
+                    if (err) return json(res, 400, { error: err.message });
+                    shareLog(!!b.on);
+                    json(res, 200, { on: !!logServer, port: LOG_PORT });
+                });
+            }
             if (u.pathname === '/fetch' && req.method === 'GET') return proxy(u.query.url, res);
             // A zipped subtitle (as YIFY Subtitles serves them): the file inside, as bytes, for the app to decode.
             if (u.pathname === '/unzip' && req.method === 'GET') {
@@ -330,6 +363,28 @@ function createServer() {
         }
     });
 
+    // A second, read-only listener on every interface that answers GET /log and nothing else.
+    const LOG_PORT = PORT + 1;
+    let logServer = null;
+    const shareLog = (on) => {
+        if (on && !logServer) {
+            logServer = http.createServer((req, res) => {
+                if (req.method === 'GET' && url.parse(req.url).pathname === '/log') {
+                    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+                    return res.end(util.recentLog());
+                }
+                res.writeHead(404);
+                res.end();
+            });
+            logServer.on('error', e => { util.log('log sharing failed:', e.message); logServer = null; });
+            logServer.listen(LOG_PORT, '0.0.0.0', () => util.log('sharing the log on port', LOG_PORT));
+        } else if (!on && logServer) {
+            try { logServer.close(); } catch (e) { /* closed */ }
+            logServer = null;
+            util.log('stopped sharing the log');
+        }
+    };
+
     return {
         server: server,
         cacheDir: cacheDir,
@@ -343,6 +398,7 @@ function createServer() {
             });
         },
         close: () => {
+            shareLog(false);
             torrents.forEach(t => t.close());
             torrents.clear();
             try { server.close(); } catch (e) { /* closed */ }

@@ -6,6 +6,7 @@ Tizen Studio. The TV's Developer Mode must have this computer's IP as Host PC IP
     python3 tizen/tools/sdb.py run 192.168.1.50
     python3 tizen/tools/sdb.py uninstall 192.168.1.50
     python3 tizen/tools/sdb.py shell 192.168.1.50 "0 vd_applist"
+    python3 tizen/tools/sdb.py log 192.168.1.50          # the engine's log, when shared in Settings
 """
 import os
 import socket
@@ -143,6 +144,14 @@ def main():
         print(Connection(host).shell('0 vd_appuninstall %s' % (sys.argv[3] if len(sys.argv) > 3 else PACKAGE)))
     elif cmd == 'shell':
         print(Connection(host).shell(sys.argv[3]))
+    elif cmd == 'log':
+        # The engine's log, served while Settings → About → "Share the engine's log" is on.
+        import urllib.request
+        try:
+            with urllib.request.urlopen('http://%s:8616/log' % host, timeout=10) as r:
+                sys.stdout.write(r.read().decode(errors='replace'))
+        except OSError as e:
+            sys.exit('No log at %s:8616 (%s). Turn on Settings → About → "Share the engine\'s log" on the TV.' % (host, e))
     else:
         sys.exit(__doc__)
 

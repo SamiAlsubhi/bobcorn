@@ -63,11 +63,29 @@ function escapeBytes(buf) {
     return s;
 }
 
+// The log: printed, kept in memory (GET /log), and appended to a file when one
+// is set, so a TV's log can be read after the fact (tools/sdb.py pull).
+const recent = [];
+let logFile = null;
+
 function log() {
     const args = Array.prototype.slice.call(arguments);
     args.unshift('[bobcorn]');
     console.log.apply(console, args);
+    const line = new Date().toISOString() + ' ' + args.slice(1).map(a => typeof a === 'string' ? a : (a && a.stack) || JSON.stringify(a)).join(' ');
+    recent.push(line);
+    if (recent.length > 400) recent.shift();
+    if (logFile) {
+        try {
+            const fs = require('fs');
+            fs.appendFileSync(logFile, line + '\n');
+            if (fs.statSync(logFile).size > 1024 * 1024) fs.renameSync(logFile, logFile + '.1');
+        } catch (e) { /* logging never breaks the engine */ }
+    }
 }
+
+function setLogFile(path) { logFile = path; }
+function recentLog() { return recent.join('\n') + '\n'; }
 
 function contains(list, value) {
     return list.indexOf(value) !== -1;
@@ -82,5 +100,7 @@ module.exports = {
     compactPeers: compactPeers,
     escapeBytes: escapeBytes,
     log: log,
+    setLogFile: setLogFile,
+    recentLog: recentLog,
     contains: contains
 };

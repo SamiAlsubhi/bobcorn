@@ -79,6 +79,10 @@ var Store = (function () {
         },
         setSubtitleLanguage: function (code) { write('subtitleLanguage', code); },
 
+        // Troubleshooting: the engine serves its log on the home network while this is on.
+        logSharing: function () { return read('logSharing', false) === true; },
+        setLogSharing: function (on) { write('logSharing', !!on); },
+
         // API keys, set in Settings (or baked in at build time from tizen/keys.json).
         key: function (name) {
             var v = read('key.' + name, null);
