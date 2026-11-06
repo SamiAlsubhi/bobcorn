@@ -135,6 +135,7 @@ var Catalog = (function () {
 
     return {
         SORTS: SORTS,
+        normalize: normalize,
         GENRES: GENRES,
 
         /* One page of a listing; pages count from 1, an empty page is the end. */
@@ -241,7 +242,10 @@ var Catalog = (function () {
 
         /* What My List and Continue Watching keep: enough to draw a poster and reopen the page. */
         saved: function (t) {
-            return { key: t.key, id: t.id, type: t.type, title: t.title, year: t.year, poster: t.poster, base: t.base, options: [] };
+            var out = { key: t.key, id: t.id, type: t.type, title: t.title, year: t.year, poster: t.poster, base: t.base, options: [] };
+            // IPTV titles reopen from their source, kind and id (and a playlist's stream address).
+            if (t.iptv) { out.iptv = true; out.kind = t.kind; out.srcId = t.srcId; out.ext = t.ext || null; out.url = t.url || null; out.rating = t.rating || null; }
+            return out;
         },
 
         qualities: function (t) {

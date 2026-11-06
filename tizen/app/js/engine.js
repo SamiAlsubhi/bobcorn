@@ -84,7 +84,7 @@ var Engine = (function () {
 
     return {
         base: BASE,
-        VERSION: '1.3.0',   // the engine this app was built with (tizen/service/lib/server.js)
+        VERSION: '1.5.0',   // the engine this app was built with (tizen/service/lib/server.js)
         ensure: ensure,
         /* GET through the engine, which has no CORS limits. Resolves to parsed JSON, or text. */
         fetch: function (url) { return request('GET', '/fetch?url=' + encodeURIComponent(url), undefined, 30000); },
@@ -108,6 +108,13 @@ var Engine = (function () {
         status: function (id) { return request('GET', '/torrents/' + id + '/status', undefined, 4000); },
         /* Troubleshooting: the engine serves its log (only that) on the home network at port 8616. */
         shareLog: function (on) { return request('POST', '/share-log', { on: !!on }); },
+        /* The settings backup the engine keeps in the TV's shared storage (see Store). */
+        loadSettings: function () { return request('GET', '/settings', undefined, 5000); },
+        saveSettings: function (values) { return request('POST', '/settings', values, 5000); },
+        /* IPTV search in the engine's index of an Xtream Codes account (see service/lib/iptv.js). */
+        iptvSearch: function (src, query) {
+            return request('POST', '/iptv/search', { host: src.host, username: src.username, password: src.password, query: query }, 15000);
+        },
         close: function (id) { return request('DELETE', '/torrents/' + id).catch(function () {}); }
     };
 })();

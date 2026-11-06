@@ -39,11 +39,27 @@ language turn on by themselves.
 
 **Rotten Tomatoes scores** show on posters and title pages with an OMDb key.
 
+## IPTV
+
+Besides catalog sources, Bobcorn plays IPTV services you subscribe to: an **Xtream Codes (XC) account** (host,
+username and password) or an **M3U playlist** address, added in Settings → IPTV. An IPTV source has **Live TV**,
+**Movies** and **Series** tabs: categories down the left, channels or posters on the right, a category at a time
+(providers' full lists run to 50–100 MB, too much for the TV to load at once).
+
+- **Live TV** plays with AVPlay (HLS, falling back to MPEG-TS). ▲▼ or CH± change channel, **Channels** lists the
+  category, and the guide shows what's on now and next. Dropped streams reconnect by themselves.
+- **Movies and series** have details pages, resume where you stopped, and play the next episode.
+- **Search** covers channels, films and series. For an XC account the engine builds a compact index of the account
+  the first time (about a minute; 250,000 titles took 41 s and 33 MB), keeps it on the TV and refreshes it daily.
+- Accounts usually allow one screen at a time; changing channel stops the old stream before opening the next.
+
 ## API keys
 
 Settings → Ratings and subtitles takes an [OMDb](https://www.omdbapi.com/apikey.aspx) key and an
 [OpenSubtitles](https://www.opensubtitles.com/consumers) key (optional: films find subtitles without one). Typing them with the remote is slow, so the build can
-carry them: put them in `tizen/keys.json` (git-ignored), `{"omdb": "…", "opensubtitles": "…"}`, and build. Keys typed
+carry them: put them in `tizen/keys.json` (git-ignored), `{"omdb": "…", "opensubtitles": "…"}`, and build. It can
+also carry sources, which a build adds to the TV once: `"sources": [{"name": "…", "url": "https://…"},
+{"kind": "xtream", "name": "…", "host": "http://…", "username": "…", "password": "…"}]`. Keys typed
 on the TV take precedence. OMDb's example address from its welcome email works as well as the bare key.
 
 ## Install it on your TV

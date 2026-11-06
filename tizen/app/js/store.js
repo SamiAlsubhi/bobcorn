@@ -15,15 +15,96 @@ var Store = (function () {
 
     function write(key, value) {
         try { localStorage.setItem('bobcorn.' + key, JSON.stringify(value)); } catch (e) { /* storage full or blocked */ }
+        if (BACKED_UP.indexOf(key) >= 0) scheduleBackup();
+    }
+
+    // ---- Backup in the engine ---------------------------------------------------------------------
+    // The TV drops an app's localStorage when the app is reinstalled or its data is cleared. These settings
+    // are also copied to the engine, which keeps them in the TV's shared storage, and restored from there
+    // when localStorage comes up empty. (Ratings and subtitle files are caches: they aren't backed up.)
+    var BACKED_UP = ['sources', 'activeSource', 'myList', 'resume', 'picked', 'subtitleLanguage',
+        'key.omdb', 'key.opensubtitles', 'logSharing', 'builtinsSeen'];
+    var backupTimer = null;
+
+    function snapshot() {
+        var out = {};
+        BACKED_UP.forEach(function (k) {
+            try { var v = localStorage.getItem('bobcorn.' + k); if (v !== null) out[k] = v; } catch (e) {}
+        });
+        return out;
+    }
+    function scheduleBackup() {
+        clearTimeout(backupTimer);
+        backupTimer = setTimeout(function () {
+            if (window.Engine) Engine.saveSettings(snapshot()).catch(function () { /* engine not up yet; the next change retries */ });
+        }, 1500);
+    }
+
+    // Sources built in from tizen/keys.json ("sources": [{name, url}]), offered when none are saved.
+    function builtInSources() {
+        var extra = (window.BOBCORN_KEYS && window.BOBCORN_KEYS.sources) || [];
+        return [EXAMPLE].concat(extra.filter(function (s) { return s && (s.url || s.host); }).map(function (s, i) {
+            if (s.kind === 'xtream') return { id: 'builtin' + i, kind: 'xtream', name: s.name || s.host, host: s.host, username: s.username, password: s.password };
+            if (s.kind === 'm3u') return { id: 'builtin' + i, kind: 'm3u', name: s.name || 'Playlist', url: s.url };
+            return { id: 'builtin' + i, name: s.name || s.url.replace(/^https?:\/\//, ''), url: String(s.url).replace(/\/+$/, '') };
+        }));
+    }
+
+    // What identifies a source, whatever its id: its address (and username, for an IPTV account).
+    function signature(src) {
+        var where = String(src.host || src.url || '').replace(/^https?:\/\//, '').replace(/\/+$/, '').toLowerCase();
+        return (src.kind || 'api') + ':' + where + (src.username ? ':' + src.username : '');
     }
 
     return {
-        sources: function () { return read('sources', [EXAMPLE]); },
-        setSources: function (list) { write('sources', list); },
+        /* True when this TV's localStorage holds no saved settings (fresh install, or data cleared). */
+        isEmpty: function () { return Object.keys(snapshot()).length === 0; },
+        /* Puts a backup's values back; resolves true when anything was restored. */
+        restore: function (saved) {
+            var n = 0;
+            BACKED_UP.forEach(function (k) {
+                if (saved && typeof saved[k] === 'string') { try { localStorage.setItem('bobcorn.' + k, saved[k]); n++; } catch (e) {} }
+            });
+            return n > 0;
+        },
+        backupNow: function () { scheduleBackup(); },
+
+        sources: function () {
+            var saved = read('sources', null);
+            if (!saved) return builtInSources();
+            // A build can bring new built-in sources (an IPTV account, say): add each to a saved list once.
+            // Once added it's an ordinary source, so removing it in Settings keeps it removed.
+            var seen = read('builtinsSeen', []), added = false;
+            builtInSources().forEach(function (b) {
+                var sig = signature(b);
+                if (seen.indexOf(sig) >= 0) return;
+                seen.push(sig);
+                added = true;
+                if (!saved.some(function (x) { return signature(x) === sig; })) saved.push(b);
+            });
+            if (added) { write('builtinsSeen', seen); write('sources', saved); }
+            return saved;
+        },
+        setSources: function (list) {
+            // The built-ins were on offer when this list was made: one removed here stays removed.
+            var seen = read('builtinsSeen', []);
+            builtInSources().forEach(function (b) { var sig = signature(b); if (seen.indexOf(sig) < 0) seen.push(sig); });
+            write('builtinsSeen', seen);
+            write('sources', list);
+        },
         addSource: function (name, url) {
             var list = this.sources();
             url = url.replace(/\/+$/, '');
             var src = { id: String(Date.now()), name: name || url.replace(/^https?:\/\//, ''), url: url };
+            list.push(src);
+            this.setSources(list);
+            this.setActiveSource(src.id);
+            return src;
+        },
+        /* An IPTV source: {kind: 'xtream', name, host, username, password} or {kind: 'm3u', name, url}. */
+        addIptvSource: function (src) {
+            var list = this.sources();
+            src.id = 'iptv' + Date.now();
             list.push(src);
             this.setSources(list);
             this.setActiveSource(src.id);

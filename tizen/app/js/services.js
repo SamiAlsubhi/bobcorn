@@ -119,11 +119,17 @@ var OpenSubtitles = (function () {
             var p = { languages: (q.language || 'en').toLowerCase() };
             if (q.hash) p.moviehash = q.hash;
             var id = imdbNumber(q.imdbID);
-            if (id) {
+            // IPTV titles have no IMDb ID but often a TMDB one: a film's, or a single episode's.
+            if (!id && q.tmdbID) p.tmdb_id = String(q.tmdbID);
+            else if (id) {
                 if (q.season !== null && q.season !== undefined && q.episode !== null && q.episode !== undefined) {
                     p.parent_imdb_id = id; p.season_number = String(q.season); p.episode_number = String(q.episode);
                 } else p.imdb_id = id;
-            } else if (q.fileName) p.query = q.fileName.toLowerCase();
+            } else if (q.fileName) {
+                // Provider names carry tags ("[MULTI-SUB]", "4K", "- 2025"): search by the title alone.
+                p.query = q.fileName.replace(/^\s*[a-z0-9-]{2,6}\s*\|\s*/i, ' ').replace(/\[[^\]]*\]|\([^)]*\)/g, ' ').replace(/\b(4k|fhd|uhd|hd|sd|multi[- ]?sub|vostfr)\b/gi, ' ')
+                    .replace(/\s-\s\d{4}\b/, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+            }
             // Sorted keys, as the API asks, so it answers without a redirect.
             var query = Object.keys(p).sort().map(function (k) { return k + '=' + encodeURIComponent(p[k]).replace(/%20/g, '+'); }).join('&');
             return send('subtitles?' + query, 'GET').then(function (json) {

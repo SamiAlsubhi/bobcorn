@@ -12,8 +12,9 @@ const metainfo = require('./metainfo');
 const fetch = require('./fetch');
 const util = require('./util');
 const unzip = require('./unzip');
+const iptv = require('./iptv');
 
-const VERSION = '1.3.0';
+const VERSION = '1.5.0';
 const PORT = 8615;
 
 function pickCacheDir() {
@@ -79,6 +80,10 @@ function createServer() {
     const torrents = new Map(); // id -> Torrent
     // The log file sits beside the cache (which is wiped at start), so it survives a restart.
     util.setLogFile(cacheDir.replace(/\/+$/, '') + '.log');
+    // Settings backup, also beside the cache: /home/owner/share/bobcorn-cache-settings.json on the TV.
+    const settingsFile = process.env.BOBCORN_SETTINGS || cacheDir.replace(/\/+$/, '') + '-settings.json';
+    // IPTV search indexes, also beside the cache (kept across restarts, refreshed daily).
+    const iptvIndex = new iptv.IptvIndex(cacheDir.replace(/\/+$/, '') + '-iptv');
     util.log('engine', VERSION, 'started | cache in', cacheDir, '| node', process.version, '| TLS checks', fetch.VERIFY_TLS ? 'on' : 'off');
     // Every 30 s: memory and what's open, to tell a TV killing the service from a stream problem.
     const health = setInterval(() => {
@@ -290,6 +295,34 @@ function createServer() {
         try {
             if (u.pathname === '/ping') {
                 return json(res, 200, { ok: true, version: VERSION, node: process.version, cache: cacheDir });
+            }
+            // A backup of the app's settings (sources, keys, My List, resume points). The app's own storage is
+            // lost when the app is reinstalled or its data is cleared; this file, in the TV's shared storage
+            // beside the cache, is not, and the app restores from it when its storage comes up empty.
+            // IPTV (Xtream Codes) search: {host, username, password, query} -> {status, progress, results}.
+            if (u.pathname === '/iptv/search' && req.method === 'POST') {
+                return readBody(req, (err, b) => {
+                    if (err || !b.host || !b.username) return json(res, 400, { error: 'Send host, username, password and query' });
+                    const acc = { host: b.host, username: String(b.username), password: String(b.password || '') };
+                    if (b.refresh) iptvIndex.build(acc);
+                    json(res, 200, iptvIndex.search(acc, String(b.query || '')));
+                });
+            }
+            if (u.pathname === '/settings' && req.method === 'GET') {
+                let saved = {};
+                try { saved = JSON.parse(fs.readFileSync(settingsFile, 'utf8')); } catch (e) { /* none yet */ }
+                return json(res, 200, saved);
+            }
+            if (u.pathname === '/settings' && (req.method === 'PUT' || req.method === 'POST')) {
+                return readBody(req, (err, body) => {
+                    if (err || !body || typeof body !== 'object') return json(res, 400, { error: err ? err.message : 'Send a JSON object' });
+                    try {
+                        fs.writeFileSync(settingsFile + '.tmp', JSON.stringify(body));
+                        fs.renameSync(settingsFile + '.tmp', settingsFile);
+                    } catch (e) { return json(res, 500, { error: 'Could not save the settings: ' + e.message }); }
+                    res.writeHead(204);
+                    res.end();
+                });
             }
             if (u.pathname === '/log') {
                 res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });

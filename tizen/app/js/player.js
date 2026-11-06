@@ -218,7 +218,7 @@ var Player = (function () {
     /* Which services a search asks: YIFY Subtitles for films (no key), OpenSubtitles when it has a key. */
     function services() {
         var imdb = /^tt\d+/.test(s.title.id || '') ? s.title.id : null;
-        return { yify: !!imdb && !s.episode, os: !!Store.key('opensubtitles'), imdb: imdb };
+        return { yify: !!imdb && !s.episode, os: !!Store.key('opensubtitles'), imdb: imdb, tmdb: s.tmdb || null };
     }
     function searchNote() {
         var sv = services(), names = [];
@@ -238,12 +238,12 @@ var Player = (function () {
         var session = s, fileName = (s.file.path || '').split('/').pop().replace(/\.[^.]+$/, ''), errors = [];
         function soft(p, name) { return p.catch(function (e) { errors.push(name + ': ' + e.message); return []; }); }
         var yify = sv.yify ? soft(YifySubs.search(sv.imdb, lang, fileName), 'YIFY Subtitles') : Promise.resolve([]);
-        var os = !sv.os ? Promise.resolve([]) : soft((s.hash ? Promise.resolve(s.hash) : Engine.hash(s.torrent.id, s.fileIndex).then(function (r) { return r.hash; }, function () { return null; })).then(function (h) {
+        var os = !sv.os ? Promise.resolve([]) : soft((s.hash || !s.torrent ? Promise.resolve(s.hash || null) : Engine.hash(s.torrent.id, s.fileIndex).then(function (r) { return r.hash; }, function () { return null; })).then(function (h) {
             if (s !== session) return [];
             s.hash = h;
             var ep = s.episode;
             return OpenSubtitles.search({
-                imdbID: sv.imdb, season: ep ? ep.season : null, episode: ep ? ep.episode : null,
+                imdbID: sv.imdb, tmdbID: sv.tmdb, season: ep ? ep.season : null, episode: ep ? ep.episode : null,
                 fileName: fileName, hash: h, language: lang
             }).then(function (list) { list.forEach(function (x) { x.source = 'os'; }); return list; });
         }), 'OpenSubtitles');
@@ -309,6 +309,12 @@ var Player = (function () {
     // ---- On-screen display ----------------------------------------------------------------------
 
     function buttons() {
+        if (s.live) {
+            var live = [{ id: 'channels', label: '☰ Channels', run: channelMenu }];
+            if (s.embedded.length) live.push({ id: 'subs', label: 'Subtitles: ' + subtitleLabel(), run: subtitleMenu });
+            if (s.audios.length > 1) live.push({ id: 'audio', label: 'Audio: ' + s.audios[s.audioIndex].label, run: audioMenu });
+            return live;
+        }
         var list = [
             { id: 'play', label: backend.paused() ? '▶ Play' : '❚❚ Pause', run: togglePause },
             { id: 'subs', label: 'Subtitles: ' + subtitleLabel(), run: subtitleMenu },
@@ -332,6 +338,7 @@ var Player = (function () {
 
     function render() {
         if (!s || !osd || s.error) return;
+        if (s.live) return renderLive();
         var duration = s.duration || backend.duration() || 0;
         var time = s.seekTarget !== null ? s.seekTarget : (s.time || 0);
         var st = s.status || {};
@@ -365,6 +372,62 @@ var Player = (function () {
             btns + '</div>';
     }
 
+    /* Live TV: the channel, what's on now and next (from the provider's guide), and its progress. */
+    function renderLive() {
+        var now = (s.guide || [])[0], next = (s.guide || [])[1], pct = 0;
+        if (now && now.end > now.start) pct = Math.max(0, Math.min(100, (Date.now() - now.start) / (now.end - now.start) * 100));
+        var hm = function (d) { return (d.getHours() < 10 ? '0' : '') + d.getHours() + ':' + (d.getMinutes() < 10 ? '0' : '') + d.getMinutes(); };
+        var status = s.loading || (s.buffering ? 'Buffering…' : '');
+        // The channel list works while a channel is still tuning in (or won't start).
+        var btns = '<div class="osd-buttons">' + buttons().map(function (b, i) {
+            return '<span class="osd-btn' + (s.focus === 'buttons' && s.btn === i ? ' focused' : '') + '">' + esc(b.label) + '</span>';
+        }).join('') + '</div>';
+        var count = s.req.channels ? s.req.channels.length : 0;
+        osd.innerHTML =
+            '<div class="osd-top"><div class="osd-title"><span class="live-badge">LIVE</span>' + esc(s.label) + '</div>' +
+            '<div class="osd-sub">' + (count > 1 ? 'Channel ' + (s.req.channelIndex + 1) + ' of ' + count + ' · ▲▼ or CH± to change' : '') + '</div></div>' +
+            menuHTML() +
+            '<div class="osd-bottom">' +
+            (now ? '<div class="osd-row"><span><b>Now</b> ' + esc(now.title) + '</span><span>' + hm(now.start) + '–' + hm(now.end) + '</span></div>' +
+                '<div class="osd-bar"><div class="osd-played" style="width:' + pct + '%"></div></div>' : '') +
+            (next ? '<div class="osd-row dim"><span>Next: ' + esc(next.title) + '</span><span>' + hm(next.start) + '</span></div>' : '') +
+            (status ? '<div class="osd-row"><span class="osd-status">' + esc(status) + '</span></div>' : '') +
+            btns + '</div>';
+    }
+
+    function menuHTML() {
+        if (!s.menu) return '';
+        var m = s.menu, first = Math.max(0, Math.min(m.index - 4, m.items.length - 9));
+        return '<div class="osd-menu"><h3>' + esc(m.title) + '</h3>' + (m.items.length ? m.items.slice(first, first + 9).map(function (it, j) {
+            var i = first + j;
+            return '<div class="osd-item' + (i === m.index ? ' focused' : '') + (it.selected ? ' selected' : '') + (it.action ? ' action' : '') + '">' +
+                '<div>' + esc(it.label) + '</div>' + (it.note ? '<div class="osd-note">' + esc(it.note) + '</div>' : '') + '</div>';
+        }).join('') : '<div class="osd-note">Please wait…</div>') +
+            (m.items.length > 9 ? '<div class="osd-note">' + (m.index + 1) + ' of ' + m.items.length + '</div>' : '') + '</div>';
+    }
+
+    // ---- Live TV: changing channel ------------------------------------------------------------------
+
+    function channelMenu() {
+        var list = s.req.channels || [];
+        openMenu('Channels', list.map(function (c, i) {
+            return { label: (c.num || i + 1) + '  ' + c.title, selected: i === s.req.channelIndex, run: function () { zapTo(i); } };
+        }), s.req.channelIndex);
+    }
+    function zap(delta) {
+        var list = s.req.channels || [];
+        if (list.length < 2) return;
+        zapTo((s.req.channelIndex + delta + list.length) % list.length);
+    }
+    /* The account allows one stream at a time, so the current one stops before the next opens. */
+    function zapTo(i) {
+        var req = s.req, onExit = s.onExit;
+        var next = req.makeChannel(req.channels[i]);
+        next.channelIndex = i;
+        teardown(false);
+        start(next, onExit);
+    }
+
     function peersText(st) {
         if (st.peers === undefined) return '';
         var parts = [st.peers + (st.peers === 1 ? ' peer' : ' peers')];
@@ -379,6 +442,7 @@ var Player = (function () {
     var seekTimer = null;
     function nudge(delta) {
         if (!s || s.loading) return;
+        if (s.live) { showOSD(); return; }
         var duration = s.duration || backend.duration();
         var from = s.seekTarget !== null ? s.seekTarget : backend.time();
         s.seekTarget = Math.max(0, Math.min(duration ? duration - 5 : Infinity, from + delta));
@@ -411,6 +475,22 @@ var Player = (function () {
             return true;
         }
 
+        // Live TV has no seek bar: ▲▼ (or CH±) change channel, ◀▶ move along the buttons, OK opens one.
+        if (s.live && !s.error) {
+            var lb = buttons();
+            if (code === K.CH_UP || code === K.UP) { zap(1); return true; }
+            if (code === K.CH_DOWN || code === K.DOWN) { zap(-1); return true; }
+            if (code === K.LEFT || code === K.RIGHT || code === K.ENTER) {
+                var wasHidden = osd.hidden;
+                s.focus = 'buttons';
+                s.btn = Math.min(s.btn || 0, lb.length - 1);
+                if (!wasHidden && code === K.LEFT) s.btn = Math.max(0, s.btn - 1);
+                if (!wasHidden && code === K.RIGHT) s.btn = Math.min(lb.length - 1, s.btn + 1);
+                if (!wasHidden && code === K.ENTER) { lb[s.btn].run(); return true; }
+                showOSD();
+                return true;
+            }
+        }
         // Shortcuts that work anywhere.
         switch (code) {
             case K.PLAY_PAUSE: togglePause(); return true;
@@ -454,10 +534,10 @@ var Player = (function () {
     // ---- Lifecycle --------------------------------------------------------------------------------
 
     function report() {
-        if (!s || !s.torrent) return;
+        if (!s || s.live || (!s.torrent && !s.direct)) return;
         var duration = s.duration || backend.duration();
         var t = s.time || backend.time();
-        if (duration) Engine.position(s.torrent.id, s.fileIndex, t, duration);
+        if (s.torrent && duration) Engine.position(s.torrent.id, s.fileIndex, t, duration);
         if (duration && t > 0) Store.setResume(s.resumeKey, t, duration, s.title);
     }
 
@@ -468,6 +548,7 @@ var Player = (function () {
 
     function finished() {
         if (!s) return;
+        if (s.live) { streamError('STREAM_ENDED'); return; }
         Store.setResume(s.resumeKey, 0, 0);
         if (s.next) playNext(); else stop();
     }
@@ -509,8 +590,11 @@ var Player = (function () {
         if (onExit) onExit();
     }
 
-    /* req: {title, episode?, option, startAt?, next?} where next is the same shape, for autoplay. */
+    /* req: {title, episode?, option, startAt?, next?} where next is the same shape, for autoplay.
+       Or a direct stream (IPTV): {title, url, altUrl?, live?, channels?, channelIndex?, makeChannel?, guide?,
+       episode?, nextRequest?, startAt?, subLine?, fileName?}. */
     function start(req, onExit) {
+        if (req.url) { startDirect(req, onExit); return; }
         var ep = req.episode;
         s = {
             title: req.title, episode: ep || null, label: req.title.title, subLine: ep ? ep.tag + ' · ' + ep.title : (req.option.quality || ''),
@@ -544,6 +628,71 @@ var Player = (function () {
                 every(2000, report);
             });
         }).catch(function (err) { if (s === session) fail(err.message || String(err)); });
+    }
+
+    // ---- Direct streams (IPTV): no torrent engine in between ------------------------------------------
+
+    function startDirect(req, onExit) {
+        var ep = req.episode;
+        s = {
+            title: req.title, episode: ep || null, label: req.title.title, subLine: req.subLine || '',
+            resumeKey: ep ? ep.key : req.title.key, next: req.nextRequest ? req.nextRequest() : null, onExit: onExit, req: req,
+            retries: 0, direct: true, live: !!req.live, url: req.url, file: { path: req.fileName || req.title.title }, tmdb: req.tmdbID || null,
+            loading: req.live ? 'Tuning in…' : 'Opening…', buffering: false, time: 0, seekTarget: null, status: null, guide: null,
+            embedded: [], audios: [], audioIndex: 0, sub: null, cues: null, focus: req.live ? 'buttons' : 'bar', btn: 0, menu: null
+        };
+        if (s.next && !s.next.episode) s.next = null;
+        document.body.classList.add('playing');
+        Nav.setHandler(keys);
+        showOSD();
+        every(200, tickSubtitle);
+        if (s.live) {
+            var session = s, refresh = function () {
+                if (s !== session || !req.guide) return;
+                req.guide().then(function (g) { if (s === session) { s.guide = g; if (!osd.hidden) render(); } });
+            };
+            refresh();
+            every(60000, refresh);
+        } else every(2000, report);
+        openDirect(s, req.startAt || 0, true);
+    }
+
+    function openDirect(session, at, first) {
+        backend.open(s.url, function () {
+            if (s !== session) return;
+            s.duration = s.live ? 0 : backend.duration();
+            if (first) chooseInitialSubtitle();
+            else if (s.sub) setSubtitle(s.sub);
+            function go() { s.loading = null; s.playingSince = Date.now(); backend.play(); showOSD(); }
+            if (at > 0 && !s.live) { s.time = at; backend.seek(at, go); } else go();
+        }, function (code) { if (s === session) directError(code); });
+    }
+
+    /* A live channel that won't open in HLS tries MPEG-TS once; then dropped streams reconnect (3 times, reset
+       after a minute of good playback). */
+    function directError(code) {
+        if (!s || s.error) return;
+        var session = s;
+        if (!s.playingSince && s.req.altUrl && s.url !== s.req.altUrl) {
+            s.url = s.req.altUrl;
+            s.loading = 'Trying another stream format…';
+            render();
+            backend.stop();
+            openDirect(session, 0, true);
+            return;
+        }
+        if (s.playingSince && Date.now() - s.playingSince > 60000) s.retries = 0;
+        if ((s.retries || 0) >= 3) {
+            fail('The stream stopped (' + code + '). The channel may be off air, or your account is in use on another screen.');
+            return;
+        }
+        s.retries = (s.retries || 0) + 1;
+        var at = s.time || 0;
+        s.playingSince = 0;
+        backend.stop();
+        s.loading = 'Reconnecting (' + s.retries + ' of 3)…';
+        showOSD();
+        setTimeout(function () { if (s === session) openDirect(session, s.live ? 0 : at, false); }, 1500);
     }
 
     /* Waits until the engine holds what the TV's player reads first: the file's start and end (the container's
@@ -600,6 +749,7 @@ var Player = (function () {
        where it was. Anything else is a real playback error. */
     function streamError(code) {
         if (!s || s.error) return;
+        if (s.direct) { directError(code); return; }
         var session = s, at = s.time || 0;
         if (s.playingSince && Date.now() - s.playingSince > 60000) s.retries = 0;
         var network = /CONNECTION|NETWORK|TIMEOUT|TIMED_OUT|INVALID_STATE|NO_RESPONSE|HTTP/i.test(code);

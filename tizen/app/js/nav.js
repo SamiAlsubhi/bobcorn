@@ -7,7 +7,7 @@ var Nav = (function () {
         LEFT: 37, UP: 38, RIGHT: 39, DOWN: 40, ENTER: 13, BACK: 10009, ESC: 27, BACKSPACE: 8,
         PLAY_PAUSE: 10252, PLAY: 415, PAUSE: 19, STOP: 413, FF: 417, RW: 412,
         RED: 403, GREEN: 404, YELLOW: 405, BLUE: 406, EXIT: 10182,
-        IME_DONE: 65376, IME_CANCEL: 65385
+        IME_DONE: 65376, IME_CANCEL: 65385, CH_UP: 427, CH_DOWN: 428
     };
 
     var current = null;   // the focused element
@@ -112,7 +112,7 @@ var Nav = (function () {
     function register() {
         if (typeof tizen === 'undefined' || !tizen.tvinputdevice) return;
         var wanted = ['MediaPlayPause', 'MediaPlay', 'MediaPause', 'MediaStop', 'MediaFastForward', 'MediaRewind',
-            'ColorF0Red', 'ColorF1Green', 'ColorF2Yellow', 'ColorF3Blue'];
+            'ColorF0Red', 'ColorF1Green', 'ColorF2Yellow', 'ColorF3Blue', 'ChannelUp', 'ChannelDown'];
         try { tizen.tvinputdevice.registerKeyBatch(wanted); } catch (e) {
             wanted.forEach(function (k) { try { tizen.tvinputdevice.registerKey(k); } catch (err) { /* not on this remote */ } });
         }

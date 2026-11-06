@@ -1,5 +1,5 @@
 'use strict';
-// Offline tests: bencode, .torrent and magnet parsing, zipped subtitles, the slot cache.
+// Offline tests: bencode, .torrent and magnet parsing, zipped subtitles, streamed JSON, the slot cache.
 //   node tizen/service/test/unit.js
 
 const assert = require('assert');
@@ -11,6 +11,8 @@ const metainfo = require('../lib/metainfo');
 const Storage = require('../lib/storage');
 const util = require('../lib/util');
 const unzip = require('../lib/unzip');
+const ArrayStream = require('../lib/jsonstream');
+const iptv = require('../lib/iptv');
 
 let passed = 0;
 function test(name, fn) {
@@ -27,6 +29,22 @@ test('zipped subtitles: the .srt is found and inflated', () => {
     const text = sub.data.toString('binary');
     assert.ok(text.indexOf('00:00:01,000 --> 00:00:02,500') >= 0);
     assert.strictEqual(sub.data[text.indexOf('FF1111>') + 7], 0xc7);   // the first Arabic letter, in Windows-1256
+});
+
+test('huge JSON arrays read an element at a time, across chunk boundaries', () => {
+    const list = [{ name: 'Al "Jazeera" {HD}', stream_id: 1, category_id: '7', stream_icon: 'http://x/a.png' },
+        { name: 'Amélie [nested {braces}]', stream_id: 2, category_id: 8, container_extension: 'mkv', rating: '7.5' },
+        { name: 'ملف', stream_id: 3, extra: { deep: [1, { x: '}' }] } }];
+    const text = JSON.stringify(list);
+    const bytes = util.from(text, 'utf8');
+    for (let size = 1; size <= 7; size += 3) {   // every chunk size splits strings, escapes and UTF-8 differently
+        const got = [];
+        const s = new ArrayStream(x => got.push(x));
+        for (let i = 0; i < bytes.length; i += size) s.write(bytes.slice(i, i + size));
+        assert.deepStrictEqual ? assert.deepStrictEqual(got, list) : assert.deepEqual(got, list);
+    }
+    assert.strictEqual(iptv.compact('vod', list[1]).e, 'mkv');
+    assert.strictEqual(iptv.normalize('Amélie [nested]!'), 'amelie nested');
 });
 
 test('bencode round trip', () => {

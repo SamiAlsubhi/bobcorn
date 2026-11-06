@@ -58,7 +58,7 @@ var Views = (function () {
         var top = stack[stack.length - 1];
         screenEl.innerHTML = '';
         screenEl.scrollTop = 0;
-        ({ home: renderHome, details: renderDetails, search: renderSearch, settings: renderSettings })[top.name](top.data);
+        ({ home: renderHome, details: renderDetails, search: renderSearch, settings: renderSettings, iptvDetails: renderIptvDetails })[top.name](top.data);
     }
 
     // ---- Modal picker (source, genre, sort, subtitle language) ---------------------------------------
@@ -83,9 +83,19 @@ var Views = (function () {
 
     // ---- Home ----------------------------------------------------------------------------------------
 
+    /* The tabs a source has: catalog APIs list movies and shows; IPTV adds live TV and calls shows series. */
+    function tabsFor(source) {
+        return IPTV.isIptv(source) ? [['live', 'Live TV'], ['vod', 'Movies'], ['series', 'Series'], ['mylist', 'My List']]
+            : [['movies', 'Movies'], ['shows', 'TV Shows'], ['mylist', 'My List']];
+    }
+    function fixTab() {
+        var ok = tabsFor(Store.activeSource()).map(function (t) { return t[0]; });
+        if (ok.indexOf(home.tab) < 0) home.tab = ok[0];
+    }
+
     function header(active) {
         var source = Store.activeSource();
-        var tabs = [['movies', 'Movies'], ['shows', 'TV Shows'], ['mylist', 'My List']].map(function (t) {
+        var tabs = tabsFor(source).map(function (t) {
             return h('div', {
                 class: 'tab focusable' + (active === t[0] ? ' active' : ''), text: t[1], 'data-key': 'tab:' + t[0],
                 onclick: function () { if (home.tab !== t[0]) { home.tab = t[0]; resetHome(); } }
@@ -93,7 +103,7 @@ var Views = (function () {
         });
         var genre = Catalog.GENRES.filter(function (g) { return g.slug === home.genre; })[0] || Catalog.GENRES[0];
         var sort = Catalog.SORTS.filter(function (x) { return x.id === home.sort; })[0];
-        var browsing = active === 'movies' || active === 'shows';
+        var browsing = !IPTV.isIptv(source) && (active === 'movies' || active === 'shows');
         return h('header', { class: 'bar' }, [
             h('div', { class: 'logo', html: '<img src="../icon.png" alt="">Bobcorn' }),
             h('nav', { class: 'tabs' }, tabs),
@@ -132,6 +142,12 @@ var Views = (function () {
 
     function resetHome() {
         home.titles = []; home.page = 0; home.done = false; home.error = null; home.loading = false;
+        fixTab();
+        if (IPTV.isIptv(Store.activeSource())) {
+            stack = [{ name: 'home', data: {} }];
+            render();
+            return;
+        }
         stack = [{ name: 'home', data: {} }];
         stack[0].focusKey = focusKeyOf(Nav.current());
         render();
@@ -168,12 +184,17 @@ var Views = (function () {
         return (t.rating ? stars(t.rating) : '') + Ratings.badge(Ratings.get(t.id));
     }
 
-    function card(t) {
-        var q = Catalog.qualities(t)[0];
+    /* list: for a live channel, the channels it sits among (for changing channel in the player). */
+    function card(t, list) {
+        var q = t.iptv ? null : Catalog.qualities(t)[0];
         var rating = ratingHTML(t);
         return h('div', {
-            class: 'card focusable', 'data-key': 'title:' + t.key,
-            onclick: function () { push('details', { listed: t }); }
+            class: 'card focusable' + (t.iptv && t.kind === 'live' ? ' channel-card' : ''), 'data-key': 'title:' + t.key,
+            onclick: function () {
+                if (!t.iptv) return push('details', { listed: t });
+                if (t.kind === 'live') return playLive(t, list || [t]);
+                push('iptvDetails', { item: t });
+            }
         }, [
             h('div', { class: 'poster' }, [
                 t.poster ? h('img', { src: t.poster, loading: 'lazy', alt: '' }) : h('div', { class: 'noposter', text: t.title }),
@@ -213,6 +234,7 @@ var Views = (function () {
     }
 
     function renderHome() {
+        fixTab();
         screenEl.appendChild(header(home.tab));
         var body = h('div', { class: 'scroll' });
         screenEl.appendChild(body);
@@ -223,6 +245,12 @@ var Views = (function () {
                 button('Open Settings', function () { push('settings', { focus: 'add' }); }, 'primary')
             ]));
             restoreFocus('.btn');
+            return;
+        }
+        fixTab();
+        if (IPTV.isIptv(Store.activeSource()) && home.tab !== 'mylist') {
+            screenEl.removeChild(body);
+            renderIptvHome();
             return;
         }
         if (home.tab === 'mylist') {
@@ -243,6 +271,221 @@ var Views = (function () {
         restoreFocus('.card');
         if (!home.titles.length && !home.loading && !home.error) loadMore();
         else updateGridFooter();
+    }
+
+    // ---- IPTV: categories beside channels or posters ---------------------------------------------------
+
+    // Per source and tab: the chosen category, and the items shown so far (long categories draw in pieces).
+    var iptvState = {};
+    var IPTV_PAGE = 120;
+
+    function iptvTab() {
+        var src = Store.activeSource(), k = src.id + ':' + home.tab;
+        if (!iptvState[k]) iptvState[k] = { categories: null, category: null, items: null, shown: 0, loading: false, error: null, account: null };
+        return iptvState[k];
+    }
+
+    function renderIptvHome() {
+        var src = Store.activeSource(), st = iptvTab(), kind = home.tab;
+        var cats = h('div', { class: 'iptv-cats' });
+        var items = h('div', { class: 'iptv-items' });
+        screenEl.appendChild(h('div', { class: 'iptv' }, [cats, items]));
+
+        if (!st.categories && !st.loading) {
+            st.loading = true;
+            Engine.ensure().then(function () { return IPTV.categories(src, kind); }).then(function (list) {
+                st.loading = false; st.categories = list;
+                if (!st.category && list.length) st.category = firstUseful(list).id;
+                if (isShowing(st)) { render(); if (st.category) loadItems(st); }
+            }, function (e) { st.loading = false; st.error = e.message; if (isShowing(st)) render(); });
+        }
+        if (st.error && !st.categories) {
+            cats.appendChild(h('p', { class: 'error pad-s', text: st.error }));
+            cats.appendChild(button('Try again', function () { st.error = null; render(); }));
+        } else if (!st.categories) cats.appendChild(h('p', { class: 'dim pad-s', text: 'Loading categories…' }));
+        else {
+            st.categories.forEach(function (c) {
+                cats.appendChild(h('div', {
+                    class: 'iptv-cat focusable' + (c.id === st.category ? ' active' : ''), 'data-key': 'cat:' + c.id, text: c.name,
+                    onclick: function () {
+                        if (st.category === c.id) { var first = screenEl.querySelector('.iptv-items .focusable'); if (first) Nav.focus(first); return; }
+                        st.category = c.id; st.items = null; st.shown = 0;
+                        Array.prototype.forEach.call(cats.querySelectorAll('.iptv-cat'), function (el) { el.classList.toggle('active', el === this); }, this);
+                        loadItems(st);
+                    }
+                }));
+            });
+        }
+        fillItems(st, items);
+        restoreFocus(st.items && st.items.length ? '.iptv-items .focusable' : '.iptv-cat.active');
+    }
+
+    // Providers often start with an "account information" category: skip to the first real one.
+    function firstUseful(list) {
+        for (var i = 0; i < list.length; i++) if (!/accou?nt|info/i.test(list[i].name)) return list[i];
+        return list[0];
+    }
+    function isShowing(st) { return stack.length === 1 && stack[0].name === 'home' && IPTV.isIptv(Store.activeSource()) && iptvTab() === st && !Player.active(); }
+
+    function loadItems(st) {
+        var src = Store.activeSource(), kind = home.tab, cat = st.category;
+        st.items = null; st.error = null; st.shown = 0;
+        var box = screenEl.querySelector('.iptv-items');
+        if (box) fillItems(st, box);
+        IPTV.items(src, kind, cat).then(function (list) {
+            if (st.category !== cat) return;
+            st.items = list;
+            var b = isShowing(st) && screenEl.querySelector('.iptv-items');
+            if (b) fillItems(st, b);
+        }, function (e) {
+            if (st.category !== cat) return;
+            st.error = e.message;
+            var b = isShowing(st) && screenEl.querySelector('.iptv-items');
+            if (b) fillItems(st, b);
+        });
+    }
+
+    function fillItems(st, box) {
+        box.innerHTML = '';
+        var cat = (st.categories || []).filter(function (c) { return c.id === st.category; })[0];
+        if (cat) box.appendChild(h('h2', { class: 'iptv-title', text: cat.name + (st.items ? ' · ' + st.items.length : '') }));
+        if (st.error) { box.appendChild(h('p', { class: 'error pad-s', text: st.error })); return; }
+        if (!st.items) { if (st.category) box.appendChild(h('p', { class: 'dim pad-s', text: 'Loading…' })); return; }
+        if (!st.items.length) { box.appendChild(h('p', { class: 'dim pad-s', text: 'Nothing in this category.' })); return; }
+        var live = home.tab === 'live';
+        var holder = h('div', { class: live ? 'channels' : 'grid iptv-grid' });
+        box.appendChild(holder);
+        st.shown = 0;
+        more();
+        function more() {
+            var next = st.items.slice(st.shown, st.shown + IPTV_PAGE);
+            next.forEach(function (it, j) {
+                var el = live ? channelRow(it, st.items, st.shown + j) : card(it);
+                el.onfocusin = function () { if (st.shown < st.items.length && Array.prototype.indexOf.call(holder.children, el) > holder.children.length - 20) more(); };
+                holder.appendChild(el);
+            });
+            st.shown += next.length;
+        }
+    }
+
+    function channelRow(it, list, index) {
+        return h('div', { class: 'channel focusable', 'data-key': 'title:' + it.key, onclick: function () { playLive(it, list); } }, [
+            h('span', { class: 'ch-num', text: String(it.num || index + 1) }),
+            h('div', { class: 'ch-logo' }, [it.poster ? h('img', { src: it.poster, loading: 'lazy', alt: '' }) : null]),
+            h('span', { class: 'ch-name', text: it.title })
+        ]);
+    }
+
+    function sourceOf(item) {
+        return Store.sources().filter(function (s) { return s.id === item.srcId; })[0] || null;
+    }
+
+    function playLive(channel, list) {
+        var src = sourceOf(channel);
+        if (!src) { toast('That channel\'s source was removed'); return; }
+        var top = stack[stack.length - 1];
+        top.focusKey = focusKeyOf(Nav.current());
+        screenEl.hidden = true;
+        Player.play(liveRequest(src, channel, list), function () { screenEl.hidden = false; render(); });
+    }
+
+    /* A live channel for the player, with its neighbours for changing channel. */
+    function liveRequest(src, channel, list) {
+        var channels = (list || [channel]).filter(function (c) { return c.kind === 'live'; });
+        return {
+            title: channel, live: true, url: IPTV.streamURL(src, channel, null, 'm3u8'), altUrl: IPTV.streamURL(src, channel, null, 'ts'),
+            subLine: 'Live', guide: function () { return IPTV.guide(src, channel); },
+            channels: channels, channelIndex: Math.max(0, channels.indexOf(channel)),
+            makeChannel: function (c) { return liveRequest(src, c, channels); }
+        };
+    }
+
+    // ---- IPTV details: a movie, or a series with its seasons ------------------------------------------
+
+    function renderIptvDetails(data) {
+        var it = data.item, src = sourceOf(it);
+        if (!src) { screenEl.appendChild(h('p', { class: 'error pad', text: 'This title\'s source was removed.' })); return; }
+        if (!data.info && !data.loading && !data.error) {
+            data.loading = true;
+            (it.kind === 'series' ? IPTV.seriesInfo(src, it) : IPTV.movieInfo(src, it)).then(function (info) {
+                data.info = info; data.loading = false;
+                if (it.kind === 'series') data.season = (info.episodes[0] || {}).season;
+                if (stack[stack.length - 1].data === data) { stack[stack.length - 1].focusKey = null; render(); }
+            }, function (e) {
+                data.loading = false; data.error = e.message;
+                if (stack[stack.length - 1].data === data) render();
+            });
+        }
+        var info = data.info || {};
+        var page = h('div', { class: 'details scroll' });
+        var back = info.backdrop || it.poster;
+        if (back) page.appendChild(h('div', { class: 'backdrop', style: 'background-image:url("' + back + '")' }));
+        var meta = [info.year || it.year, info.duration ? Math.round(info.duration / 60) + ' min' : null, info.genre].filter(Boolean).join(' · ');
+        var box = h('div', { class: 'info' }, [
+            h('h1', { text: it.title }),
+            h('div', { class: 'meta', html: escapeHTML(meta) + (it.rating ? ' &nbsp; ' + stars(it.rating) : '') }),
+            info.cast ? h('div', { class: 'genres', text: info.cast }) : null,
+            h('p', { class: 'synopsis', text: info.plot || '' })
+        ]);
+        var actions = h('div', { class: 'actions' });
+        box.appendChild(actions);
+        page.appendChild(h('div', { class: 'hero' }, [h('div', { class: 'hero-poster' }, [(info.poster || it.poster) ? h('img', { src: info.poster || it.poster, alt: '' }) : null]), box]));
+        screenEl.appendChild(page);
+        if (data.loading) box.appendChild(h('p', { class: 'dim', text: 'Loading…' }));
+        if (data.error) box.appendChild(h('p', { class: 'error', text: data.error }));
+
+        if (it.kind === 'vod' && (data.info || data.error)) {
+            var resume = Store.resume(it.key);
+            if (resume) {
+                actions.appendChild(button('▶ Resume ' + clock(resume), function () { playIptv(src, it, null, resume, info); }, 'primary'));
+                actions.appendChild(button('Play from start', function () { playIptv(src, it, null, 0, info); }));
+            } else actions.appendChild(button('▶ Watch Now', function () { playIptv(src, it, null, 0, info); }, 'primary'));
+        }
+        actions.appendChild(myListButton(it));
+        if (it.kind === 'series' && data.info) {
+            var eps = info.episodes || [];
+            if (!eps.length) box.appendChild(h('p', { class: 'dim', text: 'The provider lists no episodes.' }));
+            else {
+                var seasons = [];
+                eps.forEach(function (e) { if (seasons.indexOf(e.season) < 0) seasons.push(e.season); });
+                box.appendChild(h('div', { class: 'seasons' }, seasons.map(function (n) {
+                    return h('div', {
+                        class: 'season focusable' + (n === data.season ? ' active' : ''), 'data-key': 'season:' + n, text: 'Season ' + n,
+                        onclick: function () { if (data.season !== n) { data.season = n; stack[stack.length - 1].focusKey = 'season:' + n; render(); } }
+                    });
+                })));
+                box.appendChild(h('div', { class: 'episodes' }, eps.filter(function (e) { return e.season === data.season; }).map(function (e) {
+                    var r = Store.resume(e.key);
+                    return h('div', { class: 'episode focusable', 'data-key': 'ep:' + e.key, onclick: function () { playIptv(src, it, e, r, info); } }, [
+                        h('span', { class: 'ep-tag', text: 'E' + e.episode }),
+                        h('div', { class: 'ep-text' }, [h('div', { class: 'ep-title', text: e.title }), e.overview ? h('div', { class: 'ep-overview', text: e.overview }) : null]),
+                        h('span', { class: 'ep-right', text: r ? '▶ ' + clock(r) : (e.duration ? Math.round(e.duration / 60) + ' min' : '') })
+                    ]);
+                })));
+            }
+        }
+        restoreFocus(it.kind === 'series' && data.info && (info.episodes || []).length ? '.episode' : '.actions .btn');
+    }
+
+    /* A movie or an episode (with the following episodes chained for autoplay). */
+    function playIptv(src, it, episode, startAt, info) {
+        function request(ep, at) {
+            var req = {
+                title: it, episode: ep || null, url: IPTV.streamURL(src, it, ep), startAt: at || 0,
+                subLine: ep ? ep.tag + ' · ' + ep.title : (info && info.year ? String(info.year) : ''),
+                fileName: ep ? it.title + ' ' + ep.tag : it.title, runtime: ep ? ep.duration : (info && info.duration) || 0,
+                tmdbID: ep ? ep.tmdb : (info && info.tmdb) || null
+            };
+            if (ep) {
+                var eps = info.episodes, i = eps.indexOf(ep);
+                if (i >= 0 && i + 1 < eps.length) req.nextRequest = function () { return request(eps[i + 1], 0); };
+            }
+            return req;
+        }
+        var top = stack[stack.length - 1];
+        top.focusKey = focusKeyOf(Nav.current());
+        screenEl.hidden = true;
+        Player.play(request(episode, startAt), function () { screenEl.hidden = false; render(); });
     }
 
     // ---- Details -----------------------------------------------------------------------------------
@@ -395,7 +638,7 @@ var Views = (function () {
     /* Searches movies and TV shows together; results come in two sections. */
     function renderSearch(data) {
         var source = Store.activeSource() || {};
-        var input = h('input', { type: 'text', class: 'search-input focusable', placeholder: 'Search movies and TV shows in ' + (source.name || 'your source'), value: data.query || '', 'data-key': 'search:input' });
+        var input = h('input', { type: 'text', class: 'search-input focusable', placeholder: (IPTV.isIptv(source) ? 'Search channels, films and series in ' : 'Search movies and TV shows in ') + (source.name || 'your source'), value: data.query || '', 'data-key': 'search:input' });
         input.onsubmit = function () {
             var q = input.value.trim();
             if (!q) return;
@@ -407,6 +650,7 @@ var Views = (function () {
         screenEl.appendChild(h('div', { class: 'search-bar' }, [input, go]));
         var body = h('div', { class: 'scroll' });
         screenEl.appendChild(body);
+        if (IPTV.isIptv(Store.activeSource())) { renderIptvResults(data, body); return; }
         var r = data.results;
         if (data.loading) body.appendChild(h('p', { class: 'dim pad', text: 'Searching movies and TV shows for “' + data.query + '”…' }));
         else if (data.error) body.appendChild(h('p', { class: 'error pad', text: data.error }));
@@ -425,6 +669,7 @@ var Views = (function () {
     function runSearch(data) {
         var source = Store.activeSource();
         if (!data.query || !source) return;
+        if (IPTV.isIptv(source)) { runIptvSearch(data, source); return; }
         data.loading = true;
         stack[stack.length - 1].focusKey = null;
         render();
@@ -435,6 +680,54 @@ var Views = (function () {
             data.loading = false; data.error = err.message;
             if (stack[stack.length - 1].data === data) render();
         });
+    }
+
+    /* IPTV search: the engine builds an index of the account the first time (a few minutes), then answers at once. */
+    function runIptvSearch(data, source) {
+        data.loading = true;
+        stack[stack.length - 1].focusKey = null;
+        render();
+        var query = data.query;
+        IPTV.search(source, query).then(function (r) {
+            if (data.query !== query) return;
+            data.loading = false;
+            data.results = r;
+            if (stack[stack.length - 1].data === data) render();
+            // Still indexing: ask again in a few seconds.
+            if (r.status === 'building') setTimeout(function () {
+                if (stack[stack.length - 1].data === data && data.query === query && !Player.active()) runIptvSearch(data, source);
+            }, 4000);
+        }, function (err) {
+            data.loading = false; data.error = err.message;
+            if (stack[stack.length - 1].data === data) render();
+        });
+    }
+
+    function renderIptvResults(data, body) {
+        var r = data.results;
+        if (data.loading && !r) body.appendChild(h('p', { class: 'dim pad', text: 'Searching for “' + data.query + '”…' }));
+        else if (data.error) body.appendChild(h('p', { class: 'error pad', text: data.error }));
+        else if (r && r.status === 'building' && !r.results) {
+            var p = r.progress || {};
+            body.appendChild(h('p', { class: 'dim pad', text: 'Getting this account ready for search (the first time only; it takes a few minutes): ' +
+                (p.live || 0) + ' channels, ' + (p.vod || 0) + ' movies, ' + (p.series || 0) + ' series so far…' }));
+        } else if (r && r.status === 'error' && !r.results) body.appendChild(h('p', { class: 'error pad', text: 'Search isn\'t ready: ' + (r.error || 'the provider didn\'t send its lists') }));
+        else if (r && r.results) {
+            var res = r.results, any = false;
+            [['live', 'Live TV'], ['vod', 'Movies'], ['series', 'Series']].forEach(function (sec) {
+                var list = res[sec[0]] || [];
+                if (!list.length) return;
+                any = true;
+                var count = (r.counts && r.counts[sec[0]]) || list.length;
+                body.appendChild(h('h2', { class: 'section', text: sec[1] + ' · ' + count + (count > list.length ? ' (showing ' + list.length + ')' : '') }));
+                body.appendChild(sec[0] === 'live'
+                    ? h('div', { class: 'channels pad-x' }, list.map(function (c, i) { return channelRow(c, list, i); }))
+                    : h('div', { class: 'grid' }, list.map(function (t) { return card(t); })));
+            });
+            if (!any) body.appendChild(h('p', { class: 'dim pad', text: 'Nothing matches “' + data.query + '”.' }));
+            if (r.status === 'building') body.appendChild(h('p', { class: 'dim pad', text: 'Refreshing this account\'s search in the background.' }));
+        } else body.appendChild(h('p', { class: 'dim pad', text: 'Press OK to type a channel, film or series, then OK on the keyboard to search.' }));
+        restoreFocus(r && r.results ? '.channel, .card' : '.search-input');
     }
 
     // ---- Settings ----------------------------------------------------------------------------------
@@ -476,9 +769,18 @@ var Views = (function () {
                     if (i === 0) { Store.setActiveSource(src.id); toast('Using ' + src.name); home.titles = []; home.page = 0; home.done = false; render(); }
                     else { Store.removeSource(src.id); home.titles = []; home.page = 0; home.done = false; render(); }
                 });
-            } }, [h('span', { text: src.name }), h('span', { class: 'dim', text: src.url })]);
+            } }, [h('span', { text: src.name }), h('span', { class: 'dim', text: sourceLabel(src) })]);
             page.appendChild(row);
         });
+        // The active IPTV account's state, asked of the provider.
+        if (active && active.kind === 'xtream') {
+            var acct = h('p', { class: 'dim', text: active.name + ': checking the account…' });
+            page.appendChild(acct);
+            IPTV.account(active).then(function (a) {
+                acct.textContent = active.name + ': ' + a.status + (a.expires ? ' until ' + a.expires.toLocaleDateString() : '') +
+                    (a.maxConnections ? ' · ' + a.maxConnections + (a.maxConnections === 1 ? ' screen' : ' screens') + ' at a time' : '');
+            }, function (e) { acct.textContent = active.name + ': ' + e.message; acct.className = 'error'; });
+        }
 
         var name = h('input', { type: 'text', class: 'focusable', placeholder: 'Name (optional)', 'data-key': 'add:name' });
         var url = h('input', { type: 'text', class: 'focusable', placeholder: 'Catalog API address, https://…', 'data-key': 'add' });
@@ -493,6 +795,41 @@ var Views = (function () {
         url.onsubmit = function () { add.click(); };
         page.appendChild(h('div', { class: 'add-row' }, [url, name, add]));
         page.appendChild(h('p', { class: 'dim', text: 'Only add sources and open torrents you have the right to download.' }));
+
+        // IPTV: an Xtream Codes account (host, username, password), or an M3U playlist's address.
+        page.appendChild(h('h2', { text: 'IPTV' }));
+        var xName = h('input', { type: 'text', class: 'focusable', placeholder: 'Name (optional)', 'data-key': 'xc:name' });
+        var xHost = h('input', { type: 'text', class: 'focusable', placeholder: 'Host, http://…', 'data-key': 'xc:host' });
+        var xUser = h('input', { type: 'text', class: 'focusable', placeholder: 'Username', 'data-key': 'xc:user' });
+        var xPass = h('input', { type: 'password', class: 'focusable', placeholder: 'Password', 'data-key': 'xc:pass' });
+        var xAdd = button('Add account', function () {
+            var host = xHost.value.trim(), user = xUser.value.trim(), pass = xPass.value;
+            if (!host || !user) { toast('Type the host and username'); return; }
+            var src = { kind: 'xtream', name: xName.value.trim() || host.replace(/^https?:\/\//, '').replace(/[:\/].*$/, ''), host: host, username: user, password: pass };
+            toast('Checking the account…');
+            IPTV.account(src).then(function (a) {
+                Store.addIptvSource(src);
+                toast('Added: ' + a.status + (a.expires ? ' until ' + a.expires.toLocaleDateString() : ''));
+                resetHomeState();
+                render();
+            }, function (e) { toast(e.message); });
+        });
+        page.appendChild(h('p', { class: 'dim small', text: 'An Xtream Codes (XC) account from your IPTV provider.' }));
+        page.appendChild(h('div', { class: 'add-row' }, [xHost, xName]));
+        page.appendChild(h('div', { class: 'add-row' }, [xUser, xPass, xAdd]));
+        var mName = h('input', { type: 'text', class: 'focusable', placeholder: 'Name (optional)', 'data-key': 'm3u:name' });
+        var mURL = h('input', { type: 'text', class: 'focusable', placeholder: 'M3U playlist address, http://…', 'data-key': 'm3u:url' });
+        var mAdd = button('Add playlist', function () {
+            var u = mURL.value.trim();
+            if (!/^https?:\/\/\S+$/i.test(u)) { toast('Type the playlist address, starting with http'); return; }
+            Store.addIptvSource({ kind: 'm3u', name: mName.value.trim() || 'Playlist', url: u });
+            toast('Added the playlist. It is now the active source.');
+            resetHomeState();
+            render();
+        });
+        mURL.onsubmit = function () { mAdd.click(); };
+        page.appendChild(h('div', { class: 'add-row' }, [mURL, mName, mAdd]));
+        page.appendChild(h('p', { class: 'dim', text: 'Only add IPTV services you are subscribed to.' }));
 
         page.appendChild(h('h2', { text: 'Ratings and subtitles' }));
         keyRow('omdb', 'OMDb', 'Rotten Tomatoes scores on posters. A free key from omdbapi.com/apikey.aspx.', Ratings.keyChanged)
@@ -549,6 +886,13 @@ var Views = (function () {
 
     // ---- Helpers -----------------------------------------------------------------------------------
 
+    function sourceLabel(src) {
+        if (src.kind === 'xtream') return 'IPTV account · ' + String(src.host || '').replace(/^https?:\/\//, '') + ' · ' + src.username;
+        if (src.kind === 'm3u') return 'M3U playlist · ' + String(src.url || '').replace(/^https?:\/\//, '').slice(0, 60);
+        return src.url;
+    }
+    function resetHomeState() { home.titles = []; home.page = 0; home.done = false; home.error = null; fixTab(); }
+
     function clock(sec) {
         sec = Math.floor(sec);
         var hh = Math.floor(sec / 3600), m = Math.floor(sec / 60) % 60, x = sec % 60;
@@ -576,6 +920,13 @@ var Views = (function () {
             render();
         },
         back: back,
-        toast: toast
+        toast: toast,
+        /* Back to a fresh home screen, after settings were restored from the backup. */
+        reload: function () {
+            if (Player.active()) return;
+            home.titles = []; home.page = 0; home.done = false; home.error = null; home.loading = false;
+            stack = [{ name: 'home', data: {} }];
+            render();
+        }
     };
 })();
