@@ -328,7 +328,9 @@ enum APIClient {
         if let response = try? decoder.decode(YTSResponse.self, from: data), let body = response.data {
             let movies = (body.movies ?? []).compactMap(\.value)
             let all = body.movie.map { [ $0 ] } ?? movies
-            if !all.isEmpty || body.movies != nil {
+            // A search with no results, or a page past the end, has a
+            // movie_count and no movies at all.
+            if !all.isEmpty || body.movies != nil || body.movie_count != nil {
                 return all.map { RawTitle(yts: $0) }.filter(\.isTitle)
             }
         }
@@ -358,7 +360,7 @@ enum APIClient {
         let decoder = JSONDecoder()
         if let response = try? decoder.decode(YTSResponse.self, from: data),
            let body = response.data {
-            return body.movies != nil || body.movie != nil
+            return body.movies != nil || body.movie != nil || body.movie_count != nil
         }
         if let list = try? decoder.decode([Lenient<YTSMovie>].self, from: data) {
             return list.contains {
@@ -381,35 +383,58 @@ private enum CatalogAPIDialect: Sendable {
 private actor CatalogAPIDialectResolver {
     static let shared = CatalogAPIDialectResolver()
     private var cache: [String: CatalogAPIDialect] = [:]
-    private var pending: [String: Task<CatalogAPIDialect, Never>] = [:]
+    private var pending: [String: Task<CatalogAPIDialect?, Never>] = [:]
 
     func dialect(for base: URL) async -> CatalogAPIDialect {
         let key = base.absoluteString
         if let known = cache[key] { return known }
-        if let task = pending[key] { return await task.value }
+        if let task = pending[key] { return await task.value ?? .current }
         let task = Task { await CatalogAPIDialectResolver.detect(base) }
         pending[key] = task
         let dialect = await task.value
-        cache[key] = dialect
+        // Remembered only once the source answered, so one started before
+        // the network is up is asked again next time.
+        if let dialect { cache[key] = dialect }
         pending[key] = nil
-        return dialect
+        return dialect ?? .current
     }
 
-    private static func detect(_ base: URL) async -> CatalogAPIDialect {
+    /// Nil when nothing answered.
+    private static func detect(_ base: URL) async -> CatalogAPIDialect? {
         let probe = APIQuery(sourceID: UUID(), base: base, type: .movies, genre: .all, sort: .trending, search: "")
-        if let url = APIClient.currentListURL(probe, page: 1),
-           let data = try? await FeedClient.data(url),
-           APIClient.isCurrentJSON(data) {
-            return .current
+        var unanswered = false
+        switch await fetch(APIClient.currentListURL(probe, page: 1)) {
+        case .body(let data) where APIClient.isCurrentJSON(data): return .current
+        case .unanswered: unanswered = true
+        default: break
         }
         for root in APIClient.ytsRootCandidates(for: base) {
-            if let url = APIClient.ytsListURL(root: root, query: probe, page: 1),
-               let data = try? await FeedClient.data(url),
-               APIClient.isYTSJSON(data) {
-                return .yts(root: root)
+            switch await fetch(APIClient.ytsListURL(root: root, query: probe, page: 1)) {
+            case .body(let data) where APIClient.isYTSJSON(data): return .yts(root: root)
+            case .unanswered: unanswered = true
+            default: break
             }
         }
-        return .current
+        return unanswered ? nil : .current
+    }
+
+    private enum Probe {
+        case body(Data)
+        /// An HTTP error, or no URL to ask.
+        case refused
+        /// Offline, timed out, or the host couldn't be found.
+        case unanswered
+    }
+
+    private static func fetch(_ url: URL?) async -> Probe {
+        guard let url else { return .refused }
+        do {
+            return .body(try await FeedClient.data(url))
+        } catch is FeedError {
+            return .refused
+        } catch {
+            return .unanswered
+        }
     }
 }
 
@@ -558,6 +583,7 @@ fileprivate enum TorrentNode: Decodable {
 
 fileprivate struct YTSResponse: Decodable {
     struct Body: Decodable {
+        let movie_count: Loose?
         let movies: [Lenient<YTSMovie>]?
         let movie: YTSMovie?
     }
@@ -593,6 +619,8 @@ fileprivate struct YTSTorrent: Decodable {
     let url: Loose?
     let hash: Loose?
     let quality: Loose?
+    /// "bluray" or "web".
+    let type: Loose?
     let seeds: Loose?
     let peers: Loose?
     let size: Loose?
@@ -651,6 +679,8 @@ fileprivate extension RawTitle {
             $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         }
         let languageKey = (language?.isEmpty == false ? language : nil) ?? "en"
+        let releaseTitle = movie.title_long?.text ?? name
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
         var group: [String: Lenient<RawTorrent>] = [:]
         for (index, item) in (movie.torrents ?? []).enumerated() {
             guard let torrent = item.value else { continue }
@@ -660,7 +690,14 @@ fileprivate extension RawTitle {
             let hash = torrent.hash?.text.map {
                 $0.trimmingCharacters(in: .whitespacesAndNewlines)
             }
-            let magnet = hash.flatMap { $0.isEmpty ? nil : "magnet:?xt=urn:btih:\($0)" }
+            // YTS names a .torrent by its hash, so the magnet carries a name,
+            // with the release type that tells two of one resolution apart:
+            // "Example Film (1994) 1080p BluRay".
+            let kind = (torrent.type?.text?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+                .flatMap { $0.isEmpty ? nil : $0 == "bluray" ? "BluRay" : $0 == "web" ? "WEB" : $0.uppercased() }
+            let releaseName = [releaseTitle, quality.isEmpty ? nil : quality, kind].compactMap { $0 }.joined(separator: " ")
+            let displayName = releaseName.isEmpty ? "" : "&dn=" + (releaseName.addingPercentEncoding(withAllowedCharacters: allowed) ?? "")
+            let magnet = hash.flatMap { $0.isEmpty ? nil : "magnet:?xt=urn:btih:\($0)\(displayName)" }
             let link = RawTorrent(
                 url: torrent.url?.text,
                 magnet: magnet,

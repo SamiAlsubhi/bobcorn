@@ -1,4 +1,5 @@
 import CryptoKit
+import Network
 import XCTest
 @testable import Bobcorn
 @testable import TorrentKit
@@ -113,7 +114,7 @@ final class CatalogAPITests: XCTestCase {
         let json = """
         {"status": "ok", "status_message": "Query was successful", "data": {
           "movie_count": 2, "limit": 50, "page_number": 1, "movies": [
-            {"id": 123, "imdb_code": "tt0111161", "title": "Example Film", "year": 1994,
+            {"id": 123, "imdb_code": "tt0111161", "title": "Example Film", "title_long": "Example Film (1994)", "year": 1994,
              "rating": 8.7, "runtime": 142, "genres": ["Drama"],
              "summary": "Short.", "synopsis": "A longer synopsis.", "mpa_rating": "R", "language": "en",
              "small_cover_image": "https://img.example/s.jpg",
@@ -122,11 +123,11 @@ final class CatalogAPITests: XCTestCase {
              "background_image": "https://img.example/bg.jpg",
              "background_image_original": "https://img.example/bg-o.jpg",
              "torrents": [
-               {"url": "https://yts.example/torrent/aaa.torrent", "hash": "\(hash1)", "quality": "720p",
+               {"url": "https://yts.example/torrent/aaa.torrent", "hash": "\(hash1)", "quality": "720p", "type": "bluray",
                 "seeds": 12, "peers": 3, "size": "700 MB", "size_bytes": 700000000},
-               {"url": "https://yts.example/torrent/bbb.torrent", "hash": "\(hash2)", "quality": "1080p",
+               {"url": "https://yts.example/torrent/bbb.torrent", "hash": "\(hash2)", "quality": "1080p", "type": "web",
                 "seeds": 30, "peers": 4, "size": "1.4 GB", "size_bytes": 1400000000},
-               {"url": "https://yts.example/torrent/ccc.torrent", "hash": "\(hash1)", "quality": "720p",
+               {"url": "https://yts.example/torrent/ccc.torrent", "hash": "\(hash1)", "quality": "720p", "type": "web",
                 "seeds": 5, "peers": 1, "size": "650 MB", "size_bytes": 650000000}
              ]}
           ]}}
@@ -153,7 +154,41 @@ final class CatalogAPITests: XCTestCase {
         XCTAssertEqual(hd.entry.leechers, 4)
         XCTAssertEqual(hd.entry.size, 1_400_000_000)
         XCTAssertEqual(hd.entry.torrentURL?.absoluteString, "https://yts.example/torrent/bbb.torrent")
-        XCTAssertEqual(hd.entry.magnet, "magnet:?xt=urn:btih:\(hash2)")
+        // The .torrent URL ends in a hash, so the name comes from the magnet,
+        // and the release type tells the two 720p releases apart.
+        XCTAssertEqual(hd.entry.magnet, "magnet:?xt=urn:btih:\(hash2)&dn=Example%20Film%20%281994%29%201080p%20WEB")
+        XCTAssertEqual(hd.entry.title, "Example Film (1994) 1080p WEB")
+        XCTAssertEqual(t.options.filter { $0.release.quality == "720p" }.map(\.entry.title).sorted(),
+                       ["Example Film (1994) 720p BluRay", "Example Film (1994) 720p WEB"])
+    }
+
+    /// A search with no results, or a page past the end, has a movie_count and
+    /// no movies at all.
+    func testYTSEmptyPageIsEmpty() throws {
+        let json = """
+        {"status": "ok", "status_message": "Query was successful", "data": {"movie_count": 0, "limit": 50, "page_number": 1}}
+        """
+        XCTAssertEqual(try APIClient.titles(from: data(json), type: .movies, base: base).count, 0)
+    }
+
+    /// A source that doesn't answer while its kind is worked out is asked
+    /// again next time, not taken for the original format.
+    func testWorksOutASourceAgainAfterNoAnswer() async throws {
+        let movies = """
+        {"status": "ok", "data": {"movie_count": 1, "movies": [{"id": 1, "imdb_code": "tt0111161", "title": "Example Film", "year": 1994}]}}
+        """
+        let server = try LoopbackServer { path in path.contains("list_movies.json") ? (200, movies) : (404, "") }
+        let base = try await server.start()
+        defer { server.stop() }
+        let query = APIQuery(sourceID: UUID(), base: base, type: .movies, genre: .all, sort: .trending, search: "")
+
+        do {
+            _ = try await APIClient.page(query, page: 1)
+            XCTFail("expected no answer")
+        } catch {}
+        server.answering = true
+        let titles = try await APIClient.page(query, page: 1)
+        XCTAssertEqual(titles.map(\.id), ["tt0111161"])
     }
 
     /// YTS details use `data.movie` and `description_intro` rather than the
@@ -251,6 +286,56 @@ final class CatalogAPITests: XCTestCase {
         let roundTrip = try JSONDecoder().decode(CustomSource.self, from: JSONEncoder().encode(api))
         XCTAssertEqual(roundTrip, api)
     }
+}
+
+/// Answers HTTP on loopback; until `answering`, drops every connection
+/// without a word.
+private final class LoopbackServer: @unchecked Sendable {
+    private let listener: NWListener
+    private let queue = DispatchQueue(label: "loopback-server")
+    private let lock = NSLock()
+    private var isAnswering = false
+    private let respond: (String) -> (Int, String)
+
+    var answering: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return isAnswering }
+        set { lock.lock(); isAnswering = newValue; lock.unlock() }
+    }
+
+    init(respond: @escaping (String) -> (Int, String)) throws {
+        let params = NWParameters.tcp
+        params.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
+        listener = try NWListener(using: params)
+        self.respond = respond
+    }
+
+    func start() async throws -> URL {
+        listener.newConnectionHandler = { [weak self] c in
+            guard let self else { return }
+            c.start(queue: self.queue)
+            guard self.answering else { c.cancel(); return }
+            c.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, _, _ in
+                let request = String(decoding: data ?? Data(), as: UTF8.self)
+                let path = request.split(separator: " ").dropFirst().first.map(String.init) ?? "/"
+                let (status, body) = self.respond(path)
+                let head = "HTTP/1.1 \(status) X\r\nContent-Type: application/json\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n"
+                c.send(content: Data((head + body).utf8), completion: .contentProcessed { _ in c.cancel() })
+            }
+        }
+        let port: UInt16 = try await withCheckedThrowingContinuation { c in
+            listener.stateUpdateHandler = { [listener] state in
+                switch state {
+                case .ready: listener.stateUpdateHandler = nil; c.resume(returning: listener.port!.rawValue)
+                case .failed(let e): listener.stateUpdateHandler = nil; c.resume(throwing: e)
+                default: break
+                }
+            }
+            listener.start(queue: queue)
+        }
+        return URL(string: "http://127.0.0.1:\(port)")!
+    }
+
+    func stop() { listener.cancel() }
 }
 
 final class FileToPlayTests: XCTestCase {
