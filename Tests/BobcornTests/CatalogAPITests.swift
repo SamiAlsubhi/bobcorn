@@ -107,6 +107,120 @@ final class CatalogAPITests: XCTestCase {
         XCTAssertEqual(titles[1].options.first?.entry.size, 700_000_000)
     }
 
+    /// YTS wraps its list in `data.movies`, rates out of ten, and puts every
+    /// torrent in a flat array. It often has two releases in one resolution.
+    func testDecodesYTSList() throws {
+        let json = """
+        {"status": "ok", "status_message": "Query was successful", "data": {
+          "movie_count": 2, "limit": 50, "page_number": 1, "movies": [
+            {"id": 123, "imdb_code": "tt0111161", "title": "Example Film", "year": 1994,
+             "rating": 8.7, "runtime": 142, "genres": ["Drama"],
+             "summary": "Short.", "synopsis": "A longer synopsis.", "mpa_rating": "R", "language": "en",
+             "small_cover_image": "https://img.example/s.jpg",
+             "medium_cover_image": "https://img.example/m.jpg",
+             "large_cover_image": "https://img.example/l.jpg",
+             "background_image": "https://img.example/bg.jpg",
+             "background_image_original": "https://img.example/bg-o.jpg",
+             "torrents": [
+               {"url": "https://yts.example/torrent/aaa.torrent", "hash": "\(hash1)", "quality": "720p",
+                "seeds": 12, "peers": 3, "size": "700 MB", "size_bytes": 700000000},
+               {"url": "https://yts.example/torrent/bbb.torrent", "hash": "\(hash2)", "quality": "1080p",
+                "seeds": 30, "peers": 4, "size": "1.4 GB", "size_bytes": 1400000000},
+               {"url": "https://yts.example/torrent/ccc.torrent", "hash": "\(hash1)", "quality": "720p",
+                "seeds": 5, "peers": 1, "size": "650 MB", "size_bytes": 650000000}
+             ]}
+          ]}}
+        """
+        let titles = try APIClient.titles(from: data(json), type: .movies, base: URL(string: "https://yts.example")!)
+        XCTAssertEqual(titles.count, 1)
+        let t = try XCTUnwrap(titles.first)
+        XCTAssertEqual(t.id, "tt0111161")
+        XCTAssertEqual(t.title, "Example Film")
+        XCTAssertEqual(t.year, 1994)
+        XCTAssertEqual(t.runtime, 142)
+        XCTAssertEqual(t.rating, 87)
+        XCTAssertNil(t.votes)
+        XCTAssertEqual(t.certification, "R")
+        XCTAssertEqual(t.genres, ["Drama"])
+        XCTAssertEqual(t.posterURL?.absoluteString, "https://img.example/l.jpg")
+        XCTAssertEqual(t.fanartURL?.absoluteString, "https://img.example/bg-o.jpg")
+        XCTAssertEqual(t.qualities, ["1080p", "720p"])
+        XCTAssertEqual(t.options.count, 3)
+        XCTAssertEqual(t.options.compactMap(\.release.quality).sorted(), ["1080p", "720p", "720p"])
+
+        let hd = try XCTUnwrap(t.options.first { $0.release.quality == "1080p" })
+        XCTAssertEqual(hd.entry.seeders, 30)
+        XCTAssertEqual(hd.entry.leechers, 4)
+        XCTAssertEqual(hd.entry.size, 1_400_000_000)
+        XCTAssertEqual(hd.entry.torrentURL?.absoluteString, "https://yts.example/torrent/bbb.torrent")
+        XCTAssertEqual(hd.entry.magnet, "magnet:?xt=urn:btih:\(hash2)")
+    }
+
+    /// YTS details use `data.movie` and `description_intro` rather than the
+    /// list's `synopsis`.
+    func testDecodesYTSDetail() throws {
+        let listed = try XCTUnwrap(APIClient.titles(from: data("""
+            {"status": "ok", "data": {"movies": [
+              {"id": 123, "imdb_code": "tt0111161", "title": "Example Film", "year": 1994}
+            ]}}
+            """), type: .movies, base: base).first)
+
+        let json = """
+        {"status": "ok", "data": {"movie": {
+          "id": 123, "imdb_code": "tt0111161", "title": "Example Film", "year": 1994,
+          "rating": 9.3, "runtime": 142, "genres": ["Drama"],
+          "description_intro": "The intro.", "description_full": "The whole synopsis.",
+          "mpa_rating": "R", "language": "en",
+          "large_cover_image": "https://img.example/l.jpg",
+          "background_image_original": "https://img.example/bg-o.jpg",
+          "torrents": [
+            {"url": "https://yts.example/torrent/aaa.torrent", "hash": "\(hash1)", "quality": "720p",
+             "seeds": 12, "peers": 3, "size": "700 MB", "size_bytes": 700000000}
+          ]
+        }}}
+        """
+        let d = try APIClient.details(from: data(json), listed: listed, base: base)
+        XCTAssertEqual(d.title.id, "tt0111161")
+        XCTAssertEqual(d.title.rating, 93)
+        XCTAssertEqual(d.title.synopsis, "The intro.")
+        XCTAssertEqual(d.title.options.count, 1)
+        XCTAssertTrue(d.episodes.isEmpty)
+    }
+
+    func testYTSURLs() {
+        let base = URL(string: "https://yts.example")!
+        let query = APIQuery(sourceID: UUID(), base: base, type: .movies,
+                             genre: Genre("Sci-Fi", "sci-fi"), sort: .rating, search: "matrix")
+        let list = try! XCTUnwrap(APIClient.ytsListURL(root: base.appendingPathComponent("api/v2"), query: query, page: 2))
+        let items = URLComponents(url: list, resolvingAgainstBaseURL: false)!.queryItems!
+        XCTAssertEqual(list.path, "/api/v2/list_movies.json")
+        XCTAssertEqual(items.first { $0.name == "page" }?.value, "2")
+        XCTAssertEqual(items.first { $0.name == "limit" }?.value, "50")
+        XCTAssertEqual(items.first { $0.name == "sort_by" }?.value, "rating")
+        XCTAssertEqual(items.first { $0.name == "order_by" }?.value, "desc")
+        XCTAssertEqual(items.first { $0.name == "genre" }?.value, "Sci-Fi")
+        XCTAssertEqual(items.first { $0.name == "query_term" }?.value, "matrix")
+
+        let title = APITitle(id: "tt0111161", type: .movies, title: "Example Film", year: 1994, synopsis: nil,
+                             runtime: nil, rating: nil, votes: nil, certification: nil, posterURL: nil,
+                             fanartURL: nil, genres: [], seasonCount: nil, options: [], base: base)
+        let detail = try! XCTUnwrap(APIClient.ytsDetailURL(root: base.appendingPathComponent("api/v2"), title: title))
+        let dItems = URLComponents(url: detail, resolvingAgainstBaseURL: false)!.queryItems!
+        XCTAssertEqual(detail.path, "/api/v2/movie_details.json")
+        XCTAssertEqual(dItems.first { $0.name == "imdb_id" }?.value, "tt0111161")
+    }
+
+    func testYTSRootCandidates() {
+        XCTAssertEqual(APIClient.ytsRootCandidates(for: URL(string: "https://yts.example")!).map(\.absoluteString),
+                       ["https://yts.example", "https://yts.example/api/v2"])
+        XCTAssertEqual(APIClient.ytsRootCandidates(for: URL(string: "https://yts.example/api/v2")!).map(\.absoluteString),
+                       ["https://yts.example/api/v2"])
+        XCTAssertEqual(APIClient.ytsRootCandidates(for: URL(string: "https://yts.example/api")!).map(\.absoluteString),
+                       ["https://yts.example/api", "https://yts.example/api/v2"])
+        XCTAssertEqual(APIClient.ytsRootCandidates(for: URL(string: "https://yts.example/api/v2/list_movies.json")!).map(\.absoluteString),
+                       ["https://yts.example/api/v2"])
+    }
+
     func testRejectsWhatIsNotAnAPI() {
         XCTAssertThrowsError(try APIClient.titles(from: data("<html>hi</html>"), type: .movies, base: base))
         XCTAssertThrowsError(try APIClient.titles(from: data(#"{"error": "nope"}"#), type: .movies, base: base))

@@ -55,6 +55,12 @@ enum HTML {
 struct Loose: Decodable {
     let values: [String]
 
+    init(_ value: String) { values = [value] }
+    init(_ value: Int) { values = [String(value)] }
+    init(_ value: Double) {
+        values = [value == value.rounded() ? String(Int(value)) : String(value)]
+    }
+
     init(from decoder: Decoder) throws {
         let c = try decoder.singleValueContainer()
         if let s = try? c.decode(String.self) {

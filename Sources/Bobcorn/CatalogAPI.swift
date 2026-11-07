@@ -165,16 +165,38 @@ enum APIError: LocalizedError {
 
 enum APIClient {
     /// One page of a listing. Pages count from 1; an empty page is the end.
+    ///
+    /// A source is either the catalog API Bobcorn has always read
+    /// (`/movies/<page>`, ...) or a YTS-style API (`/list_movies.json`, ...).
+    /// The two are told apart once per base URL.
     static func page(_ query: APIQuery, page: Int) async throws -> [APITitle] {
-        let path = query.base.appendingPathComponent(query.type.listPath).appendingPathComponent(String(page))
-        var c = URLComponents(url: path, resolvingAgainstBaseURL: false)
-        var items = [URLQueryItem(name: "sort", value: query.sort.rawValue),
-                     URLQueryItem(name: "order", value: String(query.sort.order))]
-        if let slug = query.genre.clause { items.append(URLQueryItem(name: "genre", value: slug)) }
-        let search = query.search.trimmingCharacters(in: .whitespaces)
-        if !search.isEmpty { items.append(URLQueryItem(name: "keywords", value: search)) }
-        c?.queryItems = items
-        guard let url = c?.url else { throw APIError.badURL }
+        let dialect = await CatalogAPIDialectResolver.shared.dialect(for: query.base)
+        switch dialect {
+        case .current:
+            guard let url = currentListURL(query, page: page) else { throw APIError.badURL }
+            return try await fetchPage(url, query: query, page: page)
+        case .yts(let root):
+            // YTS only has films.
+            guard query.type == .movies else { return [] }
+            guard let url = ytsListURL(root: root, query: query, page: page) else { throw APIError.badURL }
+            return try await fetchPage(url, query: query, page: page)
+        }
+    }
+
+    static func details(_ base: URL, _ title: APITitle) async throws -> APIDetails {
+        let dialect = await CatalogAPIDialectResolver.shared.dialect(for: base)
+        let url: URL
+        switch dialect {
+        case .current:
+            url = base.appendingPathComponent(title.type.itemPath).appendingPathComponent(title.id)
+        case .yts(let root):
+            guard let detail = ytsDetailURL(root: root, title: title) else { throw APIError.badURL }
+            url = detail
+        }
+        return try details(from: try await FeedClient.data(url), listed: title, base: base)
+    }
+
+    private static func fetchPage(_ url: URL, query: APIQuery, page: Int) async throws -> [APITitle] {
         let data: Data
         do {
             data = try await FeedClient.data(url)
@@ -184,9 +206,84 @@ enum APIClient {
         return try titles(from: data, type: query.type, base: query.base)
     }
 
-    static func details(_ base: URL, _ title: APITitle) async throws -> APIDetails {
-        let url = base.appendingPathComponent(title.type.itemPath).appendingPathComponent(title.id)
-        return try details(from: try await FeedClient.data(url), listed: title, base: base)
+    // MARK: Catalog API URLs
+
+    static func currentListURL(_ query: APIQuery, page: Int) -> URL? {
+        let path = query.base.appendingPathComponent(query.type.listPath).appendingPathComponent(String(page))
+        var c = URLComponents(url: path, resolvingAgainstBaseURL: false)
+        var items = [URLQueryItem(name: "sort", value: query.sort.rawValue),
+                     URLQueryItem(name: "order", value: String(query.sort.order))]
+        if let slug = query.genre.clause { items.append(URLQueryItem(name: "genre", value: slug)) }
+        let search = query.search.trimmingCharacters(in: .whitespaces)
+        if !search.isEmpty { items.append(URLQueryItem(name: "keywords", value: search)) }
+        c?.queryItems = items
+        return c?.url
+    }
+
+    /// A YTS API's base may be `https://yts.gg`, `https://yts.gg/api/v2` or
+    /// the list endpoint itself. Try the obvious forms.
+    static func ytsRootCandidates(for base: URL) -> [URL] {
+        var b = base
+        let last = b.lastPathComponent.lowercased()
+        if last == "list_movies.json" || last == "movie_details.json" {
+            b.deleteLastPathComponent()
+        }
+        var bString = b.absoluteString
+        while bString.hasSuffix("/") { bString.removeLast() }
+        b = URL(string: bString) ?? b
+        let path = b.path.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        var roots = [b]
+        if path.hasSuffix("api/v2") {
+            // Already the API root.
+        } else if path.hasSuffix("api") {
+            roots.append(b.appendingPathComponent("v2"))
+        } else {
+            roots.append(b.appendingPathComponent("api/v2"))
+        }
+        var seen = Set<String>()
+        return roots.filter { seen.insert($0.absoluteString).inserted }
+    }
+
+    static func ytsListURL(root: URL, query: APIQuery, page: Int) -> URL? {
+        var c = URLComponents(url: root.appendingPathComponent("list_movies.json"), resolvingAgainstBaseURL: false)
+        var items = [URLQueryItem(name: "page", value: String(page)),
+                     URLQueryItem(name: "limit", value: "50"),
+                     URLQueryItem(name: "sort_by", value: ytsSort(query.sort)),
+                     URLQueryItem(name: "order_by", value: query.sort == .name ? "asc" : "desc")]
+        if let slug = query.genre.clause { items.append(URLQueryItem(name: "genre", value: ytsGenre(slug))) }
+        let search = query.search.trimmingCharacters(in: .whitespaces)
+        if !search.isEmpty { items.append(URLQueryItem(name: "query_term", value: search)) }
+        c?.queryItems = items
+        return c?.url
+    }
+
+    static func ytsDetailURL(root: URL, title: APITitle) -> URL? {
+        var c = URLComponents(url: root.appendingPathComponent("movie_details.json"), resolvingAgainstBaseURL: false)
+        var items = [URLQueryItem(name: "with_images", value: "true"),
+                     URLQueryItem(name: "with_cast", value: "true")]
+        if title.id.lowercased().hasPrefix("tt") {
+            items.append(URLQueryItem(name: "imdb_id", value: title.id))
+        } else {
+            items.append(URLQueryItem(name: "movie_id", value: title.id))
+        }
+        c?.queryItems = items
+        return c?.url
+    }
+
+    private static func ytsSort(_ sort: APISort) -> String {
+        switch sort {
+        case .trending: return "like_count"
+        case .views: return "download_count"
+        case .rating: return "rating"
+        case .year: return "year"
+        case .name: return "title"
+        }
+    }
+
+    private static func ytsGenre(_ slug: String) -> String {
+        slug.split(separator: "-")
+            .map { $0.prefix(1).uppercased() + $0.dropFirst() }
+            .joined(separator: "-")
     }
 
     static func titles(from data: Data, type: APIMediaType, base: URL) throws -> [APITitle] {
@@ -208,16 +305,111 @@ enum APIClient {
     }
 
     /// A page is a JSON array of titles. A single title is an object, or on
-    /// some mirrors an array holding one.
+    /// some mirrors an array holding one. YTS wraps its list in
+    /// `data.movies` and its detail in `data.movie`.
     fileprivate static func decode(_ data: Data) throws -> [RawTitle] {
         let decoder = JSONDecoder()
         if let list = try? decoder.decode([Lenient<RawTitle>].self, from: data) {
-            return list.compactMap(\.value).filter(\.isTitle)
+            let titles = list.compactMap(\.value).filter(\.isTitle)
+            if !titles.isEmpty { return titles }
+            // An array can also be a mirror that drops YTS's wrapper.
+            if let yts = ytsTitles(from: data, decoder: decoder) { return yts }
+            return []
         }
         if let one = try? decoder.decode(RawTitle.self, from: data), one.isTitle {
             return [one]
         }
+        if let yts = ytsTitles(from: data, decoder: decoder) { return yts }
         throw APIError.notAnAPI
+    }
+
+    /// YTS's list, detail, and the unwrapped array some mirrors return.
+    fileprivate static func ytsTitles(from data: Data, decoder: JSONDecoder) -> [RawTitle]? {
+        if let response = try? decoder.decode(YTSResponse.self, from: data), let body = response.data {
+            let movies = (body.movies ?? []).compactMap(\.value)
+            let all = body.movie.map { [ $0 ] } ?? movies
+            if !all.isEmpty || body.movies != nil {
+                return all.map { RawTitle(yts: $0) }.filter(\.isTitle)
+            }
+        }
+        if let list = try? decoder.decode([Lenient<YTSMovie>].self, from: data) {
+            let movies = list.compactMap(\.value)
+            if !movies.isEmpty { return movies.map { RawTitle(yts: $0) }.filter(\.isTitle) }
+        }
+        if let one = try? decoder.decode(YTSMovie.self, from: data),
+           (one.imdb_code?.text ?? one.id?.text) != nil,
+           one.title?.text != nil {
+            return [RawTitle(yts: one)].filter(\.isTitle)
+        }
+        return nil
+    }
+
+    /// Used only to pick a dialect before the real request.
+    fileprivate static func isCurrentJSON(_ data: Data) -> Bool {
+        let decoder = JSONDecoder()
+        if let list = try? decoder.decode([Lenient<RawTitle>].self, from: data) {
+            return list.isEmpty || list.contains { $0.value?.isTitle == true }
+        }
+        if let one = try? decoder.decode(RawTitle.self, from: data) { return one.isTitle }
+        return false
+    }
+
+    fileprivate static func isYTSJSON(_ data: Data) -> Bool {
+        let decoder = JSONDecoder()
+        if let response = try? decoder.decode(YTSResponse.self, from: data),
+           let body = response.data {
+            return body.movies != nil || body.movie != nil
+        }
+        if let list = try? decoder.decode([Lenient<YTSMovie>].self, from: data) {
+            return list.contains {
+                ($0.value?.imdb_code?.text ?? $0.value?.id?.text) != nil && $0.value?.title?.text != nil
+            }
+        }
+        return false
+    }
+}
+
+/// How a catalog API answers: Bobcorn's original endpoints, or YTS's.
+private enum CatalogAPIDialect: Sendable {
+    case current
+    case yts(root: URL)
+}
+
+/// Picks a dialect once per base URL and remembers it for details and later
+/// pages. Detection makes one cheap request, so adding a source stays a
+/// single Base URL field.
+private actor CatalogAPIDialectResolver {
+    static let shared = CatalogAPIDialectResolver()
+    private var cache: [String: CatalogAPIDialect] = [:]
+    private var pending: [String: Task<CatalogAPIDialect, Never>] = [:]
+
+    func dialect(for base: URL) async -> CatalogAPIDialect {
+        let key = base.absoluteString
+        if let known = cache[key] { return known }
+        if let task = pending[key] { return await task.value }
+        let task = Task { await CatalogAPIDialectResolver.detect(base) }
+        pending[key] = task
+        let dialect = await task.value
+        cache[key] = dialect
+        pending[key] = nil
+        return dialect
+    }
+
+    private static func detect(_ base: URL) async -> CatalogAPIDialect {
+        let probe = APIQuery(sourceID: UUID(), base: base, type: .movies, genre: .all, sort: .trending, search: "")
+        if let url = APIClient.currentListURL(probe, page: 1),
+           let data = try? await FeedClient.data(url),
+           APIClient.isCurrentJSON(data) {
+            return .current
+        }
+        for root in APIClient.ytsRootCandidates(for: base) {
+            if let url = APIClient.ytsListURL(root: root, query: probe, page: 1),
+               let data = try? await FeedClient.data(url),
+               APIClient.isYTSJSON(data) {
+                return .yts(root: root)
+            }
+        }
+        return .current
     }
 }
 
@@ -282,6 +474,10 @@ final class APIBrowseModel {
 private struct Lenient<T: Decodable>: Decodable {
     let value: T?
 
+    init(_ value: T?) {
+        self.value = value
+    }
+
     init(from decoder: Decoder) throws {
         value = try? T(from: decoder)
     }
@@ -335,6 +531,10 @@ fileprivate struct RawTorrent: Decodable {
     let peers: Loose?
     let size: Loose?
     let filesize: Loose?
+    /// YTS torrents carry the resolution in the object; Bobcorn's own schema
+    /// uses the dictionary key. Keeping both lets one quality appear twice
+    /// (e.g. a BluRay and a WEB release) without losing a torrent.
+    let quality: Loose?
 
     var link: String? { url ?? magnet }
 }
@@ -351,6 +551,132 @@ fileprivate enum TorrentNode: Decodable {
         } else {
             self = .group(try [String: Lenient<RawTorrent>](from: decoder))
         }
+    }
+}
+
+// MARK: - YTS wire format
+
+fileprivate struct YTSResponse: Decodable {
+    struct Body: Decodable {
+        let movies: [Lenient<YTSMovie>]?
+        let movie: YTSMovie?
+    }
+
+    let data: Body?
+}
+
+fileprivate struct YTSMovie: Decodable {
+    let id: Loose?
+    let imdb_code: Loose?
+    let title: Loose?
+    let title_english: Loose?
+    let title_long: Loose?
+    let year: Loose?
+    let rating: Loose?
+    let runtime: Loose?
+    let genres: Loose?
+    let summary: Loose?
+    let synopsis: Loose?
+    let description_full: Loose?
+    let description_intro: Loose?
+    let mpa_rating: Loose?
+    let language: Loose?
+    let small_cover_image: Loose?
+    let medium_cover_image: Loose?
+    let large_cover_image: Loose?
+    let background_image: Loose?
+    let background_image_original: Loose?
+    let torrents: [Lenient<YTSTorrent>]?
+}
+
+fileprivate struct YTSTorrent: Decodable {
+    let url: Loose?
+    let hash: Loose?
+    let quality: Loose?
+    let seeds: Loose?
+    let peers: Loose?
+    let size: Loose?
+    let size_bytes: Loose?
+}
+
+fileprivate extension RawTitle {
+    /// YTS sends one flat movie object; Bobcorn's older schema groups
+    /// torrents by language and quality.
+    init(yts movie: YTSMovie) {
+        let imdb = movie.imdb_code?.text?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let numeric = movie.id?.text?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let id = (imdb?.isEmpty == false ? imdb : nil) ?? numeric
+        _id = id.flatMap { $0.isEmpty ? nil : Loose($0) }
+        imdb_id = (imdb?.isEmpty == false ? imdb : nil).map { Loose($0) }
+
+        let name = movie.title?.text ?? movie.title_english?.text ?? movie.title_long?.text
+        title = name.map { Loose($0) }
+        year = movie.year
+        let overview = movie.synopsis?.text ?? movie.summary?.text
+            ?? movie.description_intro?.text ?? movie.description_full?.text
+        synopsis = overview.map { Loose($0) }
+        runtime = movie.runtime
+        certification = movie.mpa_rating
+
+        if let score = movie.rating?.double, score > 0 {
+            // YTS rates out of ten; Bobcorn shows a percentage.
+            let percentage = score <= 10 ? score * 10 : score
+            rating = Lenient(RawTitle.Rating(
+                percentage: Loose(Int(percentage.rounded())),
+                votes: nil
+            ))
+        } else {
+            rating = nil
+        }
+
+        let poster = movie.large_cover_image?.text
+            ?? movie.medium_cover_image?.text
+            ?? movie.small_cover_image?.text
+        let fanart = movie.background_image_original?.text ?? movie.background_image?.text
+        if poster != nil || fanart != nil {
+            images = Lenient(RawTitle.Images(
+                poster: poster.map { Loose($0) },
+                fanart: fanart.map { Loose($0) },
+                banner: nil
+            ))
+        } else {
+            images = nil
+        }
+
+        genres = movie.genres
+        num_seasons = nil
+        episodes = nil
+
+        let language = movie.language?.text.map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        }
+        let languageKey = (language?.isEmpty == false ? language : nil) ?? "en"
+        var group: [String: Lenient<RawTorrent>] = [:]
+        for (index, item) in (movie.torrents ?? []).enumerated() {
+            guard let torrent = item.value else { continue }
+            let quality = (torrent.quality?.text ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let label = quality.isEmpty ? "0" : quality
+            let hash = torrent.hash?.text.map {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            let magnet = hash.flatMap { $0.isEmpty ? nil : "magnet:?xt=urn:btih:\($0)" }
+            let link = RawTorrent(
+                url: torrent.url?.text,
+                magnet: magnet,
+                seed: torrent.seeds,
+                seeds: torrent.seeds,
+                peer: torrent.peers,
+                peers: torrent.peers,
+                size: torrent.size_bytes,
+                filesize: torrent.size,
+                quality: Loose(label)
+            )
+            // Keep every release, not just one per quality: YTS often lists
+            // both a BluRay and a WEB release in the same resolution.
+            group["\(label)#\(index)"] = Lenient(link)
+        }
+        torrents = group.isEmpty ? nil : Lenient([languageKey: Lenient(TorrentNode.group(group))])
     }
 }
 
@@ -413,9 +739,16 @@ private func makeOptions(_ torrents: [String: Lenient<TorrentNode>]?, release: R
     var flat: [(quality: String, language: String?, torrent: RawTorrent)] = []
     for (key, node) in torrents ?? [:] {
         switch node.value {
-        case .torrent(let t): flat.append((key, nil, t))
-        case .group(let g): for (quality, t) in g { if let t = t.value { flat.append((quality, key, t)) } }
-        case nil: break
+        case .torrent(let t):
+            flat.append((t.quality?.text ?? key, nil, t))
+        case .group(let g):
+            for (quality, t) in g {
+                if let torrent = t.value {
+                    flat.append((torrent.quality?.text ?? quality, key, torrent))
+                }
+            }
+        case nil:
+            break
         }
     }
     let languages = Set(flat.compactMap(\.language))
@@ -424,10 +757,18 @@ private func makeOptions(_ torrents: [String: Lenient<TorrentNode>]?, release: R
     var seen = Set<String>()
     var options: [FeedOption] = []
     for (quality, language, t) in flat {
-        guard let link = t.link?.trimmingCharacters(in: .whitespacesAndNewlines), !link.isEmpty, seen.insert(link).inserted else { continue }
-        let magnet = link.lowercased().hasPrefix("magnet:") ? link : nil
-        let torrentURL = magnet == nil ? URL(string: link) : nil
+        guard let rawLink = t.link?.trimmingCharacters(in: .whitespacesAndNewlines), !rawLink.isEmpty else { continue }
+        let magnetString = t.magnet?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let urlString = t.url?.trimmingCharacters(in: .whitespacesAndNewlines)
+        // The older schema sometimes puts a magnet in `url`.
+        let urlIsMagnet = urlString?.lowercased().hasPrefix("magnet:") == true
+        let magnet: String? = magnetString?.lowercased().hasPrefix("magnet:") == true
+            ? magnetString
+            : (urlIsMagnet ? urlString : nil)
+        let torrentURL: URL? = urlIsMagnet ? nil : urlString.flatMap { URL(string: $0) }
         guard magnet != nil || torrentURL != nil else { continue }
+        let id = torrentURL?.absoluteString ?? magnet ?? rawLink
+        guard seen.insert(id).inserted else { continue }
         let parsed = magnet.flatMap { try? MagnetLink(string: $0) }
         let label = quality == "0" ? "SD" : quality
         var name = parsed?.displayName ?? torrentURL?.lastPathComponent ?? "\(fallbackName ?? release.title) \(label)"
@@ -435,7 +776,7 @@ private func makeOptions(_ torrents: [String: Lenient<TorrentNode>]?, release: R
         var r = release
         r.quality = label
         let entry = FeedEntry(
-            id: link,
+            id: id,
             title: name,
             magnet: magnet,
             torrentURL: torrentURL,

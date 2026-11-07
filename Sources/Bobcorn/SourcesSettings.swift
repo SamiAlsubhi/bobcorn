@@ -156,7 +156,7 @@ struct SourceEditor: View {
                 TextField("Name", text: $source.name, prompt: Text("Shown in the top bar"))
                 if source.kind == .api {
                     TextField("Base URL", text: $source.feedURL, prompt: Text("https://api.example.org"))
-                    Text("Bobcorn reads /movies/<page>, /shows/<page>, /movie/<imdb_id> and /show/<imdb_id> under this address, and searches, filters and sorts with the API's own keywords, genre and sort parameters.")
+                    Text("Bobcorn reads /movies/<page>, /shows/<page>, /movie/<imdb_id> and /show/<imdb_id> under this address. It also accepts APIs that serve /list_movies.json and /movie_details.json, whether you paste the host or its /api/v2 address. Searches, filters and sorts use the API's own parameters.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
