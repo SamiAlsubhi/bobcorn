@@ -97,7 +97,14 @@ struct PlayerScreen: View {
         .sheet(isPresented: Bindable(controller).subtitleSearchVisible) {
             SubtitleSearchSheet(controller: controller)
         }
+        // From the menu here or the slider in Settings.
+        .onChange(of: subtitleSize) { _, size in controller.castSubtitleSize(size) }
     }
+
+    /// The sizes the Subtitles menu offers; Settings has every step between.
+    static let subtitleSizes: [(name: String, size: Double)] = [
+        ("Small", 20), ("Medium", 26), ("Large", 32), ("Extra Large", 40),
+    ]
 
     private var topBar: some View {
         HStack(spacing: 14) {
@@ -166,6 +173,16 @@ struct PlayerScreen: View {
                 Button("Search OpenSubtitles…") { controller.subtitleSearchVisible = true }
                     .disabled(controller.subtitleSearch == nil)
                 Button("Load from File…") { controller.chooseSubtitleFile() }
+                Divider()
+                Menu("Size") {
+                    ForEach(Self.subtitleSizes, id: \.size) { option in
+                        Button {
+                            subtitleSize = option.size
+                        } label: {
+                            if subtitleSize == option.size { Label(option.name, systemImage: "checkmark") } else { Text(option.name) }
+                        }
+                    }
+                }
             } label: {
                 Image(systemName: controller.activeSubtitleID == nil ? "captions.bubble" : "captions.bubble.fill")
             }

@@ -12,7 +12,8 @@ import TorrentKit
 ///
 /// Steps: wait:<s>  shot:<name>  section:<movies|shows|myList>  search:<text>
 /// back  magnet:<uri>  torrentfile:<path>  playlargest  seek:<seconds>  state
-/// lanurl:<host>  subtitlesearch  settingsshot:<name>[|sources]  close  quit
+/// lanurl:<host>  subtitlesearch  subtitlefile:<path>  subtitlesize:<points>
+/// settingsshot:<name>[|sources]  close  quit
 /// Sources: addsource:<name>|<feed>[|<search>]  addapi:<name>|<base url>
 /// clearsources  feeddetail:<index>  feedplay  apisort:<sort>
 /// apidetail:<index>  apiplay[:<episode index>]  apidownload[:<episode index>|season]  downloads  downloadplay  deleteentry  downloaddelete
@@ -232,6 +233,12 @@ enum DebugScript {
             _ = await model.playback?.player?.seek(to: CMTime(seconds: Double(arg) ?? 0, preferredTimescale: 600))
         case "subtitlesearch":
             model.playback?.subtitleSearchVisible = true
+        case "subtitlefile":
+            // subtitlefile:<path>: as Load from File… does, without the panel.
+            model.playback?.loadSubtitleFile(URL(fileURLWithPath: arg))
+        case "subtitlesize":
+            // subtitlesize:<points>: as the player's Subtitles → Size menu does.
+            UserDefaults.standard.set(Double(arg) ?? 26, forKey: Pref.subtitleSize)
         case "settingsshot":
             // settingsshot:<name>[|sources]: Settings in a window of its own,
             // as the Settings scene only opens from a menu or a SettingsLink.

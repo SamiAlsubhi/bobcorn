@@ -344,6 +344,11 @@ public final class CastSession: @unchecked Sendable {
         queue.async { [self] in media(["type": "EDIT_TRACKS_INFO", "activeTrackIds": id.map { [$0] } ?? []]) }
     }
 
+    /// Redraws the subtitles at a new size, 1 being the device's own.
+    public func setTextScale(_ scale: Double) {
+        queue.async { [self] in media(["type": "EDIT_TRACKS_INFO", "textTrackStyle": Self.textStyle(scale: scale)]) }
+    }
+
     /// White with a shadow and no box, as Bobcorn draws them.
     static func textStyle(scale: Double) -> [String: Any] {
         ["fontScale": scale, "foregroundColor": "#FFFFFFFF", "backgroundColor": "#00000000",

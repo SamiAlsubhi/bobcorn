@@ -136,6 +136,7 @@ final class CastSessionTests: XCTestCase {
         XCTAssertEqual(states.last?.duration, 100)
         session.showTextTrack(1)
         session.showTextTrack(nil)
+        session.setTextScale(2)
 
         session.seek(to: 99)
         await fulfillment(of: [finished], timeout: 5)
@@ -160,8 +161,13 @@ final class CastSessionTests: XCTestCase {
         XCTAssertEqual((media["textTrackStyle"] as? [String: Any])?["fontScale"] as? Double, 1.5)
         XCTAssertEqual(load.json?["activeTrackIds"] as? [Int], [2])
         let edits = sent.filter { $0.type == "EDIT_TRACKS_INFO" }
-        XCTAssertEqual(edits.map { $0.json?["activeTrackIds"] as? [Int] }, [[1], []])
+        XCTAssertEqual(edits.compactMap { $0.json?["activeTrackIds"] as? [Int] }, [[1], []])
         XCTAssertEqual(edits.first?.json?["mediaSessionId"] as? Int, 7)
+        // A new size leaves the shown track alone.
+        let resize = try XCTUnwrap(edits.last)
+        XCTAssertNil(resize.json?["activeTrackIds"])
+        XCTAssertEqual((resize.json?["textTrackStyle"] as? [String: Any])?["fontScale"] as? Double, 2)
+        XCTAssertEqual(resize.json?["mediaSessionId"] as? Int, 7)
         XCTAssertEqual(sent.first { $0.type == "SEEK" }?.json?["mediaSessionId"] as? Int, 7)
         XCTAssertEqual(sent.last { $0.type == "STOP" }?.json?["sessionId"] as? String, "web-5")
     }

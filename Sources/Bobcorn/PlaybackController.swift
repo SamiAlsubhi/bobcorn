@@ -622,6 +622,11 @@ final class PlaybackController {
         }
     }
 
+    /// Subtitles on the device follow the size picked on the Mac.
+    func castSubtitleSize(_ size: Double) {
+        cast?.setTextScale(size / 26)
+    }
+
     /// The picked subtitles on the device: a track it was handed switches
     /// there, and a new one reloads the video where it is.
     private func castShowSubtitle(_ id: String?) {
@@ -793,6 +798,10 @@ final class PlaybackController {
         panel.allowedContentTypes = [.init(filenameExtension: "srt"), .init(filenameExtension: "vtt")].compactMap { $0 }
         panel.message = "Choose a subtitle file (.srt or .vtt)"
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        loadSubtitleFile(url)
+    }
+
+    func loadSubtitleFile(_ url: URL) {
         let track = SubtitleTrack(id: "local:\(url.path)", label: url.lastPathComponent, source: .local(url))
         if !localSubtitles.contains(track) { localSubtitles.append(track) }
         selectSubtitle(track.id)
