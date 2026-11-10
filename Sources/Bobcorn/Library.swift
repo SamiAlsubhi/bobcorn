@@ -123,6 +123,9 @@ final class Library {
 /// User defaults keys and their defaults.
 enum Pref {
     static let subtitleSize = "subtitleSize"
+    /// What the subtitle size can be set to, in points.
+    static let subtitleSizes = 16.0...44.0
+    static let subtitleSizeStep = 2.0
     static let maxPeers = "maxPeers"
     static let enableDHT = "enableDHT"
     static let publicTrackers = "publicTrackers"

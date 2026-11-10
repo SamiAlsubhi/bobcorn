@@ -97,14 +97,12 @@ struct PlayerScreen: View {
         .sheet(isPresented: Bindable(controller).subtitleSearchVisible) {
             SubtitleSearchSheet(controller: controller)
         }
-        // From the menu here or the slider in Settings.
+        // From the buttons here or the slider in Settings.
         .onChange(of: subtitleSize) { _, size in controller.castSubtitleSize(size) }
+        #if DEBUG
+        .onReceive(NotificationCenter.default.publisher(for: DebugScript.showControls)) { _ in poke() }
+        #endif
     }
-
-    /// The sizes the Subtitles menu offers; Settings has every step between.
-    static let subtitleSizes: [(name: String, size: Double)] = [
-        ("Small", 20), ("Medium", 26), ("Large", 32), ("Extra Large", 40),
-    ]
 
     private var topBar: some View {
         HStack(spacing: 14) {
@@ -173,16 +171,6 @@ struct PlayerScreen: View {
                 Button("Search OpenSubtitles…") { controller.subtitleSearchVisible = true }
                     .disabled(controller.subtitleSearch == nil)
                 Button("Load from File…") { controller.chooseSubtitleFile() }
-                Divider()
-                Menu("Size") {
-                    ForEach(Self.subtitleSizes, id: \.size) { option in
-                        Button {
-                            subtitleSize = option.size
-                        } label: {
-                            if subtitleSize == option.size { Label(option.name, systemImage: "checkmark") } else { Text(option.name) }
-                        }
-                    }
-                }
             } label: {
                 Image(systemName: controller.activeSubtitleID == nil ? "captions.bubble" : "captions.bubble.fill")
             }
@@ -190,6 +178,10 @@ struct PlayerScreen: View {
             .menuIndicator(.hidden)
             .fixedSize()
             .help("Subtitles")
+
+            if controller.activeSubtitleID != nil {
+                SubtitleSizeControl(size: $subtitleSize)
+            }
 
             if controller.streamURL != nil, !ExternalPlayer.installed.isEmpty {
                 Menu {
@@ -227,6 +219,38 @@ struct PlayerScreen: View {
             guard !Task.isCancelled else { return }
             chromeVisible = false
         }
+    }
+}
+
+/// Subtitles a step smaller or larger, here or on a Chromecast, within the
+/// range of the slider in Settings.
+private struct SubtitleSizeControl: View {
+    @Binding var size: Double
+
+    var body: some View {
+        let range = Pref.subtitleSizes
+        HStack(spacing: 0) {
+            Button { size = max(range.lowerBound, size - Pref.subtitleSizeStep) } label: {
+                Image(systemName: "textformat.size.smaller").frame(width: 26, height: 26)
+            }
+            .disabled(size <= range.lowerBound)
+            .help("Smaller subtitles")
+            Text("\(Int(size))")
+                .font(.system(size: 11, weight: .semibold))
+                .monospacedDigit()
+                .foregroundStyle(Theme.secondary)
+                .frame(minWidth: 18)
+                .help("Subtitle size")
+            Button { size = min(range.upperBound, size + Pref.subtitleSizeStep) } label: {
+                Image(systemName: "textformat.size.larger").frame(width: 26, height: 26)
+            }
+            .disabled(size >= range.upperBound)
+            .help("Larger subtitles")
+        }
+        .buttonStyle(.plain)
+        .font(.system(size: 13, weight: .semibold))
+        .padding(.horizontal, 4)
+        .background(Capsule().fill(.white.opacity(0.14)))
     }
 }
 

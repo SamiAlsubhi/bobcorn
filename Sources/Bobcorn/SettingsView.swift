@@ -21,7 +21,7 @@ struct SettingsView: View {
 
                 LabeledContent("Subtitle size") {
                     HStack {
-                        Slider(value: $subtitleSize, in: 16...44, step: 2)
+                        Slider(value: $subtitleSize, in: Pref.subtitleSizes, step: Pref.subtitleSizeStep)
                             .frame(width: 180)
                         Text("\(Int(subtitleSize)) pt").monospacedDigit().frame(width: 44, alignment: .trailing)
                     }

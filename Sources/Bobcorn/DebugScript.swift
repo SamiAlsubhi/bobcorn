@@ -12,13 +12,16 @@ import TorrentKit
 ///
 /// Steps: wait:<s>  shot:<name>  section:<movies|shows|myList>  search:<text>
 /// back  magnet:<uri>  torrentfile:<path>  playlargest  seek:<seconds>  state
-/// lanurl:<host>  subtitlesearch  subtitlefile:<path>  subtitlesize:<points>
+/// lanurl:<host>  subtitlesearch  subtitlefile:<path>  subtitlesize:<points>  controls
 /// settingsshot:<name>[|sources]  close  quit
 /// Sources: addsource:<name>|<feed>[|<search>]  addapi:<name>|<base url>
 /// pick:<movies|shows|both>|<source name>  clearsources  feeddetail:<index>  feedplay  apisort:<sort>
 /// apidetail:<index>  apiplay[:<episode index>]  apidownload[:<episode index>|season]  downloads  downloadplay  deleteentry  downloaddelete
 @MainActor
 enum DebugScript {
+    /// Brings back the player's controls, as moving the mouse does.
+    static let showControls = Notification.Name("BobcornDebugShowControls")
+
     static func runIfRequested() {
         let env = ProcessInfo.processInfo.environment
         guard let script = env["BOBCORN_DEBUG_SCRIPT"] else { return }
@@ -53,6 +56,8 @@ enum DebugScript {
             snapshot(to: out.appendingPathComponent("\(arg).png"))
         case "section":
             if let s = CatalogSection(rawValue: arg) { model.section = s }
+        case "controls":
+            NotificationCenter.default.post(name: showControls, object: nil)
         case "search":
             model.searchText = arg
         case "back":
