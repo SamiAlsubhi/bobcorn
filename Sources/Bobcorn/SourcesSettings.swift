@@ -63,13 +63,30 @@ struct SourcesSettings: View {
             } header: {
                 Text("Sources")
             } footer: {
-                Text("A source is an RSS or Atom feed that lists torrents as magnet links or .torrent files, or a catalog API that serves movies and shows as JSON. The source picked in the top bar fills the Movies and TV Shows tabs. Only add sources you have the right to download from.")
+                Text("A source is an RSS or Atom feed that lists torrents as magnet links or .torrent files, or a catalog API that serves movies and shows as JSON. Only add sources you have the right to download from.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             HStack {
                 Spacer()
                 Button("Add Source…") { editing = CustomSource(kind: .api, name: "", feedURL: "") }
+            }
+
+            if !store.enabled.isEmpty {
+                Section {
+                    ForEach(APIMediaType.allCases) { type in
+                        Picker("Shown in \(type.title)", selection: Binding(
+                            get: { model.source(for: type)?.id },
+                            set: { $0.map { model.setSource($0, for: type) } }
+                        )) {
+                            ForEach(store.enabled) { s in Text(s.name).tag(Optional(s.id)) }
+                        }
+                    }
+                } footer: {
+                    Text("Each tab can list a different source. The Source menu in the top bar changes the one for the tab you're on.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Section {

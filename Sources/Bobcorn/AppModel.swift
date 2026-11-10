@@ -27,16 +27,9 @@ final class AppModel {
     }
     var selectedFeedTitle: FeedTitle?
     var selectedAPITitle: APITitle?
-    /// The source whose movies and shows the tabs show.
-    var sourceID: UUID? {
-        didSet {
-            if sourceID != oldValue {
-                selectedFeedTitle = nil
-                selectedAPITitle = nil
-                reloadBrowse()
-            }
-        }
-    }
+    /// The source picked for the Movies tab, and the one for TV Shows.
+    private(set) var movieSourceID = AppModel.savedSourceID(Pref.movieSourceID)
+    private(set) var showSourceID = AppModel.savedSourceID(Pref.showSourceID)
     var feedSort: FeedSort = .seeds {
         didSet { feedBrowse.resort(feedSort) }
     }
@@ -113,8 +106,35 @@ final class AppModel {
 
     // MARK: - Sources
 
-    var currentSource: CustomSource? {
-        sources.enabled.first { $0.id == sourceID } ?? sources.enabled.first
+    /// The source the tab now showing lists.
+    var currentSource: CustomSource? { source(for: apiType) }
+
+    /// The source a tab lists: the one picked for it, or the first that's on.
+    func source(for type: APIMediaType) -> CustomSource? {
+        let id = type == .shows ? showSourceID : movieSourceID
+        return sources.enabled.first { $0.id == id } ?? sources.enabled.first
+    }
+
+    /// Shows a source in one tab, or in both when `type` is nil.
+    func setSource(_ id: UUID, for type: APIMediaType? = nil) {
+        let shown = currentSource?.id
+        if type != .shows {
+            movieSourceID = id
+            UserDefaults.standard.set(id.uuidString, forKey: Pref.movieSourceID)
+        }
+        if type != .movies {
+            showSourceID = id
+            UserDefaults.standard.set(id.uuidString, forKey: Pref.showSourceID)
+        }
+        if currentSource?.id != shown {
+            selectedFeedTitle = nil
+            selectedAPITitle = nil
+            reloadBrowse()
+        }
+    }
+
+    private static func savedSourceID(_ key: String) -> UUID? {
+        UserDefaults.standard.string(forKey: key).flatMap(UUID.init(uuidString:))
     }
 
     /// Called after Settings adds, edits, enables or removes a source.
@@ -126,7 +146,7 @@ final class AppModel {
 
     func addSource(_ source: CustomSource) {
         sources.upsert(source)
-        sourceID = source.id
+        setSource(source.id)
         sourcesChanged()
     }
 

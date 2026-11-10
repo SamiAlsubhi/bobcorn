@@ -133,7 +133,7 @@ struct TopBar: View {
             if model.section.browsesSource, model.currentSource != nil {
                 Divider().frame(height: 18).overlay(Color.white.opacity(0.15))
                 Menu {
-                    Picker("Source", selection: Binding(get: { model.currentSource?.id }, set: { model.sourceID = $0 })) {
+                    Picker("Source", selection: Binding(get: { model.currentSource?.id }, set: { $0.map { model.setSource($0, for: model.apiType) } })) {
                         ForEach(model.sources.enabled) { s in Text(s.name).tag(Optional(s.id)) }
                     }
                     .pickerStyle(.inline)

@@ -134,6 +134,9 @@ enum Pref {
     static let subtitleLanguage = "subtitleLanguage"
     /// A folder the user picked for downloads; empty for the default.
     static let cacheFolder = "cacheFolder"
+    /// The source the Movies tab lists, and the one the TV Shows tab lists.
+    static let movieSourceID = "movieSourceID"
+    static let showSourceID = "showSourceID"
 
     static func register() {
         UserDefaults.standard.register(defaults: [

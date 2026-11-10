@@ -412,7 +412,10 @@ final class Downloads {
     private func identify() {
         guard identifyTask == nil, let app else { return }
         var sources = app.sources.enabled.filter { $0.kind == .api }
-        if let current = app.currentSource, let i = sources.firstIndex(where: { $0.id == current.id }) { sources.insert(sources.remove(at: i), at: 0) }
+        // The sources picked for the tabs are asked first, Movies' before TV Shows'.
+        for picked in [app.source(for: .shows), app.source(for: .movies)] {
+            if let picked, let i = sources.firstIndex(where: { $0.id == picked.id }) { sources.insert(sources.remove(at: i), at: 0) }
+        }
         let bases = sources.compactMap { s in s.apiBase.map { (s.id, $0) } }
         let todo = items.filter { $0.about.saved == nil && $0.about.poster == nil && $0.info != nil && !lookedUp.contains($0.id) }
         guard !bases.isEmpty, !todo.isEmpty else { return }

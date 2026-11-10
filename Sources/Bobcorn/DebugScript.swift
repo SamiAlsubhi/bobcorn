@@ -15,7 +15,7 @@ import TorrentKit
 /// lanurl:<host>  subtitlesearch  subtitlefile:<path>  subtitlesize:<points>
 /// settingsshot:<name>[|sources]  close  quit
 /// Sources: addsource:<name>|<feed>[|<search>]  addapi:<name>|<base url>
-/// clearsources  feeddetail:<index>  feedplay  apisort:<sort>
+/// pick:<movies|shows|both>|<source name>  clearsources  feeddetail:<index>  feedplay  apisort:<sort>
 /// apidetail:<index>  apiplay[:<episode index>]  apidownload[:<episode index>|season]  downloads  downloadplay  deleteentry  downloaddelete
 @MainActor
 enum DebugScript {
@@ -71,6 +71,12 @@ enum DebugScript {
             guard parts.count == 2 else { return log("addapi needs name|url") }
             model.sources.upsert(CustomSource(kind: .api, name: parts[0], feedURL: parts[1]))
             model.sourcesChanged()
+        case "pick":
+            // pick:<movies|shows|both>|<source name>: the source a tab lists.
+            let parts = arg.components(separatedBy: "|")
+            guard parts.count == 2, let source = model.sources.sources.first(where: { $0.name == parts[1] }) else { return log("pick needs movies|shows|both and a source's name") }
+            model.setSource(source.id, for: APIMediaType(rawValue: parts[0]))
+            log("movies: \(model.source(for: .movies)?.name ?? "-"), shows: \(model.source(for: .shows)?.name ?? "-")")
         case "apisort":
             if let s = APISort(rawValue: arg) { model.apiSort = s }
         case "apidetail":
