@@ -442,6 +442,7 @@ struct APIDetailView: View {
                         download(best)
                     }
                 }
+                trailerButton
                 let watched = model.library.isWatched(key)
                 Button {
                     model.library.setWatched(key, !watched)
@@ -481,6 +482,7 @@ struct APIDetailView: View {
                         .buttonStyle(AccentButtonStyle())
                         .keyboardShortcut(.defaultAction)
                     }
+                    trailerButton
                     myListButton
                     imdbButton
                 }
@@ -506,6 +508,19 @@ struct APIDetailView: View {
             Label(saved ? "In My List" : "My List", systemImage: saved ? "heart.fill" : "heart")
         }
         .buttonStyle(AccentButtonStyle(prominent: false))
+    }
+
+    @ViewBuilder
+    private var trailerButton: some View {
+        if let url = shown.trailerURL {
+            Button {
+                NSWorkspace.shared.open(url)
+            } label: {
+                Label("Trailer", systemImage: "play.rectangle")
+            }
+            .buttonStyle(AccentButtonStyle(prominent: false))
+            .help(url.host.map { "Watch the trailer on \($0.hasPrefix("www.") ? String($0.dropFirst(4)) : $0)" } ?? "Watch the trailer")
+        }
     }
 
     @ViewBuilder

@@ -84,6 +84,8 @@ struct APITitle: Identifiable, Hashable {
     let options: [FeedOption]
     /// The API it came from.
     let base: URL
+    /// A trailer on YouTube, when the source names one.
+    var trailerURL: URL? = nil
 
     /// The rating out of five, for stars.
     var stars: Double? { rating.map { $0 / 20 } }
@@ -299,8 +301,9 @@ enum APIClient {
         var byID: [String: APIEpisode] = [:]
         for e in episodes where (byID[e.id]?.options.count ?? -1) < e.options.count { byID[e.id] = e }
         let sorted = byID.values.sorted { ($0.season, $0.episode) < ($1.season, $1.episode) }
-        // A listing can carry torrents the detail endpoint leaves out.
-        let merged = full.options.isEmpty && !title.options.isEmpty ? full.with(options: title.options) : full
+        // A listing can carry torrents, or a trailer, the detail endpoint leaves out.
+        var merged = full.options.isEmpty && !title.options.isEmpty ? full.with(options: title.options) : full
+        if merged.trailerURL == nil { merged.trailerURL = title.trailerURL }
         return APIDetails(title: merged, episodes: sorted)
     }
 
@@ -531,6 +534,8 @@ fileprivate struct RawTitle: Decodable {
     let images: Lenient<Images>?
     let genres: Loose?
     let num_seasons: Loose?
+    /// A link to the trailer, usually on YouTube.
+    let trailer: Loose?
     let torrents: Lenient<[String: Lenient<TorrentNode>]>?
     let episodes: [Lenient<RawEpisode>]?
 
@@ -612,6 +617,8 @@ fileprivate struct YTSMovie: Decodable {
     let large_cover_image: Loose?
     let background_image: Loose?
     let background_image_original: Loose?
+    /// The trailer's YouTube video ID.
+    let yt_trailer_code: Loose?
     let torrents: [Lenient<YTSTorrent>]?
 }
 
@@ -674,6 +681,10 @@ fileprivate extension RawTitle {
         genres = movie.genres
         num_seasons = nil
         episodes = nil
+        // A YouTube ID is letters, digits, - and _.
+        let videoID = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+        trailer = (movie.yt_trailer_code?.text?.trimmingCharacters(in: .whitespacesAndNewlines))
+            .flatMap { $0.isEmpty || $0.unicodeScalars.contains { !videoID.contains($0) } ? nil : Loose("https://www.youtube.com/watch?v=\($0)") }
 
         let language = movie.language?.text.map {
             $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -738,14 +749,24 @@ private extension APITitle {
             genres: (raw.genres?.list ?? []).map { $0 == $0.lowercased() ? $0.replacingOccurrences(of: "-", with: " ").capitalized : $0 },
             seasonCount: raw.num_seasons?.int,
             options: makeOptions(raw.torrents?.value, release: ReleaseInfo(title: title, year: year), artwork: Self.image(raw.images?.value?.poster, base)),
-            base: base
+            base: base,
+            trailerURL: Self.trailer(raw.trailer)
         )
     }
 
     func with(options: [FeedOption]) -> APITitle {
         APITitle(id: id, type: type, title: title, year: year, synopsis: synopsis, runtime: runtime, rating: rating,
                  votes: votes, certification: certification, posterURL: posterURL, fanartURL: fanartURL,
-                 genres: genres, seasonCount: seasonCount, options: options, base: base)
+                 genres: genres, seasonCount: seasonCount, options: options, base: base, trailerURL: trailerURL)
+    }
+
+    /// A web page only: "youtube.com/watch?v=…" without a scheme gets one.
+    static func trailer(_ value: Loose?) -> URL? {
+        guard var s = value?.text?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty else { return nil }
+        if !s.contains("://") { s = "https://" + s }
+        guard let url = URL(string: s), let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
+              url.host?.isEmpty == false else { return nil }
+        return url
     }
 
     /// Image URLs may be relative to the API.

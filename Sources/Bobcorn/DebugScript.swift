@@ -195,7 +195,7 @@ enum DebugScript {
                 let b = model.apiBrowse
                 log("api source=\(b.source?.name ?? "-") type=\(model.apiType.rawValue) sort=\(model.apiSort.rawValue) titles=\(b.titles.count) loading=\(b.isLoading) exhausted=\(b.exhausted) error=\(b.error ?? "-") detail=\(model.selectedAPITitle?.title ?? "-")")
                 for t in b.titles.prefix(6) {
-                    log("  \(t.id) \(t.title) [\(t.year.map(String.init) ?? "-")] rating=\(t.rating.map { String(Int($0)) } ?? "-") seasons=\(t.seasonCount.map(String.init) ?? "-") options=\(t.options.map { "\($0.qualityLabel)/\($0.entry.seeders.map(String.init) ?? "?")s/\($0.entry.size.map(formatSize) ?? "?")" }.joined(separator: ", ")) poster=\(t.posterURL != nil)")
+                    log("  \(t.id) \(t.title) [\(t.year.map(String.init) ?? "-")] rating=\(t.rating.map { String(Int($0)) } ?? "-") seasons=\(t.seasonCount.map(String.init) ?? "-") options=\(t.options.map { "\($0.qualityLabel)/\($0.entry.seeders.map(String.init) ?? "?")s/\($0.entry.size.map(formatSize) ?? "?")" }.joined(separator: ", ")) poster=\(t.posterURL != nil) trailer=\(t.trailerURL?.absoluteString ?? "-")")
                 }
             } else if model.currentSource != nil {
                 let f = model.feedBrowse

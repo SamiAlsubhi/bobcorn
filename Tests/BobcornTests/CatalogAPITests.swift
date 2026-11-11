@@ -17,7 +17,7 @@ final class CatalogAPITests: XCTestCase {
         [{"_id": "tt0468569", "imdb_id": "tt0468569", "title": "Example Media Title", "year": "2026",
           "synopsis": "A brief overview.", "runtime": "120", "rating": {"percentage": 85, "votes": 50000},
           "images": {"poster": "https://domain.com/p.jpg", "fanart": "https://domain.com/f.jpg"},
-          "genres": ["Action", "Sci-Fi"],
+          "genres": ["Action", "Sci-Fi"], "trailer": "http://youtube.com/watch?v=EXeTwQWrcwY",
           "torrents": {"en": {
             "1080p": {"url": "magnet:?xt=urn:btih:\(hash1)&dn=Title+1080p", "seed": 350, "peer": 80, "size": 2147483648, "filesize": "2.00 GB"},
             "720p": {"url": "magnet:?xt=urn:btih:\(hash2)&dn=Title+720p", "seed": 150, "peer": 40, "size": 1073741824, "filesize": "1.00 GB"}}}}]
@@ -33,6 +33,7 @@ final class CatalogAPITests: XCTestCase {
         XCTAssertEqual(t.votes, 50000)
         XCTAssertEqual(t.genres, ["Action", "Sci-Fi"])
         XCTAssertEqual(t.posterURL?.absoluteString, "https://domain.com/p.jpg")
+        XCTAssertEqual(t.trailerURL?.absoluteString, "http://youtube.com/watch?v=EXeTwQWrcwY")
         XCTAssertEqual(t.qualities, ["1080p", "720p"])
 
         let hd = try XCTUnwrap(t.options.first { $0.release.quality == "1080p" })
@@ -121,7 +122,7 @@ final class CatalogAPITests: XCTestCase {
              "medium_cover_image": "https://img.example/m.jpg",
              "large_cover_image": "https://img.example/l.jpg",
              "background_image": "https://img.example/bg.jpg",
-             "background_image_original": "https://img.example/bg-o.jpg",
+             "background_image_original": "https://img.example/bg-o.jpg", "yt_trailer_code": "Y41fFj-P4jI",
              "torrents": [
                {"url": "https://yts.example/torrent/aaa.torrent", "hash": "\(hash1)", "quality": "720p", "type": "bluray",
                 "seeds": 12, "peers": 3, "size": "700 MB", "size_bytes": 700000000},
@@ -145,6 +146,7 @@ final class CatalogAPITests: XCTestCase {
         XCTAssertEqual(t.genres, ["Drama"])
         XCTAssertEqual(t.posterURL?.absoluteString, "https://img.example/l.jpg")
         XCTAssertEqual(t.fanartURL?.absoluteString, "https://img.example/bg-o.jpg")
+        XCTAssertEqual(t.trailerURL?.absoluteString, "https://www.youtube.com/watch?v=Y41fFj-P4jI")
         XCTAssertEqual(t.qualities, ["1080p", "720p"])
         XCTAssertEqual(t.options.count, 3)
         XCTAssertEqual(t.options.compactMap(\.release.quality).sorted(), ["1080p", "720p", "720p"])
@@ -205,7 +207,7 @@ final class CatalogAPITests: XCTestCase {
           "id": 123, "imdb_code": "tt0111161", "title": "Example Film", "year": 1994,
           "rating": 9.3, "runtime": 142, "genres": ["Drama"],
           "description_intro": "The intro.", "description_full": "The whole synopsis.",
-          "mpa_rating": "R", "language": "en",
+          "mpa_rating": "R", "language": "en", "yt_trailer_code": "",
           "large_cover_image": "https://img.example/l.jpg",
           "background_image_original": "https://img.example/bg-o.jpg",
           "torrents": [
@@ -219,7 +221,13 @@ final class CatalogAPITests: XCTestCase {
         XCTAssertEqual(d.title.rating, 93)
         XCTAssertEqual(d.title.synopsis, "The intro.")
         XCTAssertEqual(d.title.options.count, 1)
+        XCTAssertNil(d.title.trailerURL, "an empty code is no trailer")
         XCTAssertTrue(d.episodes.isEmpty)
+
+        var withTrailer = listed
+        withTrailer.trailerURL = URL(string: "https://www.youtube.com/watch?v=Y41fFj-P4jI")
+        let kept = try APIClient.details(from: data(json), listed: withTrailer, base: base)
+        XCTAssertEqual(kept.title.trailerURL, withTrailer.trailerURL, "the listing's trailer stays")
     }
 
     func testYTSURLs() {
