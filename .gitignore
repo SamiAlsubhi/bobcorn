@@ -4,3 +4,8 @@ build/
 *.xcodeproj
 DerivedData/
 .DS_Store
+
+# Samsung TV build: local API keys, Python caches
+tizen/keys.json
+tizen/app/js/keys.js
+__pycache__/

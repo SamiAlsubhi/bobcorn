@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<widget xmlns="http://www.w3.org/ns/widgets" xmlns:tizen="http://tizen.org/ns/widgets" id="https://samialsubhi.github.io/bobcorn/tizen" version="1.0.0" viewmodes="maximized">
+    <tizen:application id="BobcornApp.Bobcorn" package="BobcornApp" required_version="3.0"/>
+    <name>Bobcorn</name>
+    <author href="https://samialsubhi.github.io/bobcorn">Bobcorn</author>
+    <description>Stream movies and shows over BitTorrent from the sources you add.</description>
+    <content src="app/index.html"/>
+    <icon src="icon.png"/>
+    <access origin="*" subdomains="true"/>
+    <feature name="http://tizen.org/feature/screen.size.all"/>
+    <feature name="http://tizen.org/feature/web.service"/>
+    <tizen:privilege name="http://tizen.org/privilege/internet"/>
+    <tizen:privilege name="http://developer.samsung.com/privilege/network.public"/>
+    <tizen:privilege name="http://tizen.org/privilege/tv.inputdevice"/>
+    <tizen:privilege name="http://tizen.org/privilege/application.launch"/>
+    <tizen:privilege name="http://tizen.org/privilege/unlimitedstorage"/>
+    <tizen:profile name="tv-samsung"/>
+    <tizen:metadata key="http://samsung.com/tv/metadata/prelaunch.support" value="false"/>
+    <!-- The torrent engine: a Node.js service the app starts, serving 127.0.0.1:8615. -->
+    <tizen:service id="BobcornApp.Engine">
+        <tizen:content src="service/index.js"/>
+        <tizen:name>BobcornEngine</tizen:name>
+        <tizen:description>Bobcorn's BitTorrent engine</tizen:description>
+    </tizen:service>
+    <tizen:setting screen-orientation="landscape" context-menu="disable" background-support="disable" encryption="disable" install-location="auto" hwkey-event="enable"/>
+</widget>

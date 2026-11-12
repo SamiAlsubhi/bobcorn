@@ -42,6 +42,13 @@ only ad hoc: on another Mac, macOS stops it the first time ("Apple could not
 verify…"); click Done, then Open Anyway in System Settings → Privacy &
 Security.
 
+## Samsung TVs
+
+[`tizen/`](tizen) is Bobcorn for Samsung TVs (2017 and newer), run with the
+remote and streaming on the TV itself, with its own JavaScript torrent engine.
+It keeps only 5 minutes behind and 15 minutes ahead of what you watch, never a
+whole film. [tizen/README.md](tizen/README.md) has how to install it.
+
 ## Releases and updates
 
 Pushing a version tag publishes a release:
